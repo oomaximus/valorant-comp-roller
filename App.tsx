@@ -12,19 +12,26 @@ import {
 } from "react-native";
 
 /**
- * Valorant Comp Roller (MVP)
- * - Map selector + Random
- * - Mode: Ranked Viable vs Pro-Style
- * - Role locks
+ * Valorant Comp Roller (Fun MVP+)
+ * - Map selector + Random (✅ includes Corrode)
+ * - Mode: Ranked vs Pro (affects weighting + flex tendencies)
+ * - Role locks (simple: 1 lock per base role)
  * - Exclude agents
- * - Rules engine ensures: Controller + Initiator + Sentinel always present
- * - ✅ Dive Duelist REQUIRED on every map (Ranked + Pro)
- * - Flex fills missing utility (flash/recon/2nd controller) based on map needs
- * - ✅ Simple "Quick Strats" generated from map + comp
+ * - ✅ Dive Duelist REQUIRED on every map
+ * - ✅ Comp Style presets: Standard / Double Duelist / Triple Initiator / Double Controller / Double Sentinel / Chaos
+ * - ✅ Quick Strats generated from map + comp
  */
 
-type Role = "Duelist" | "Controller" | "Initiator" | "Sentinel" | "Flex";
+type Role = "Duelist" | "Controller" | "Initiator" | "Sentinel";
 type Mode = "RANKED" | "PRO";
+
+type CompStyle =
+  | "STANDARD"
+  | "DOUBLE_DUELIST"
+  | "TRIPLE_INITIATOR"
+  | "DOUBLE_CONTROLLER"
+  | "DOUBLE_SENTINEL"
+  | "CHAOS";
 
 type Tag =
   | "flash"
@@ -40,7 +47,7 @@ type Tag =
 
 type Agent = {
   name: string;
-  roles: Array<"Duelist" | "Controller" | "Initiator" | "Sentinel">;
+  roles: Role[];
   tags: Tag[];
 };
 
@@ -55,6 +62,7 @@ type MapName =
   | "Breeze"
   | "Fracture"
   | "Pearl"
+  | "Corrode"
   | "Random";
 
 type MapNeeds = {
@@ -110,7 +118,7 @@ const AGENTS: Agent[] = [
   { name: "Yoru", roles: ["Duelist"], tags: ["flash", "entry", "dive"] },
   { name: "Waylay", roles: ["Duelist"], tags: ["entry", "dive"] },
 
-  // Non-dive duelists (still allowed for flex rolls, but dive is REQUIRED once)
+  // Non-dive duelists (allowed in additional duelist slots)
   { name: "Reyna", roles: ["Duelist"], tags: ["entry"] },
   { name: "Phoenix", roles: ["Duelist"], tags: ["flash", "entry"] },
   { name: "Iso", roles: ["Duelist"], tags: ["entry"] },
@@ -128,6 +136,10 @@ const MAPS: MapProfile[] = [
   { name: "Breeze", needs: { preferWallController: true, preferRecon: true, preferDoubleController: true } },
   { name: "Fracture", needs: { preferFlash: true, preferTrapSentinel: true } },
   { name: "Pearl", needs: { preferRecon: true, preferDoubleController: true } },
+
+  // ✅ NEW MAP
+  // (Lightweight guess: tends to like info + flash + solid anchoring)
+  { name: "Corrode", needs: { preferRecon: true, preferFlash: true, preferTrapSentinel: true } },
 ];
 
 function resolveNeeds(profile: MapProfile): MapNeeds {
@@ -163,7 +175,7 @@ function isDiveDuelist(agent: Agent) {
   return agent.roles.includes("Duelist") && hasTag(agent, "dive");
 }
 
-function roleAgents(role: Exclude<Role, "Flex">, excluded: Set<string>) {
+function roleAgents(role: Role, excluded: Set<string>) {
   return AGENTS.filter((a) => a.roles.includes(role) && !excluded.has(a.name));
 }
 
@@ -178,16 +190,102 @@ function weightedPool(base: Agent[], boosts: Array<(a: Agent) => boolean>) {
   return pool;
 }
 
-type GeneratedPick = { role: Role; agent: string };
+type GeneratedPick = { slot: string; role: Role; agent: string };
 type GeneratedComp = {
   map: Exclude<MapName, "Random">;
   mode: Mode;
+  style: CompStyle;
   picks: GeneratedPick[];
   notes: string[];
   strats: string[];
 };
 
-function buildQuickStrats(map: Exclude<MapName, "Random">, agents: Agent[]) {
+function styleLabel(style: CompStyle) {
+  switch (style) {
+    case "STANDARD":
+      return "Standard (Balanced)";
+    case "DOUBLE_DUELIST":
+      return "Double Duelist";
+    case "TRIPLE_INITIATOR":
+      return "Triple Initiator (Chaos Utility)";
+    case "DOUBLE_CONTROLLER":
+      return "Double Controller";
+    case "DOUBLE_SENTINEL":
+      return "Double Sentinel";
+    case "CHAOS":
+      return "Chaos (Anything Goes)";
+  }
+}
+
+function getStyleSlots(style: CompStyle): Array<{ role: Role; slot: string; requirements?: "DIVE_DUELIST" }> {
+  // Always 5 players
+  // ✅ Dive duelist ALWAYS required (either a dedicated slot, or enforced within the first duelist slot)
+  switch (style) {
+    case "STANDARD":
+      // Controller + Initiator + Sentinel + Dive Duelist + Flex-ish (weighted)
+      return [
+        { role: "Controller", slot: "Controller" },
+        { role: "Initiator", slot: "Initiator" },
+        { role: "Sentinel", slot: "Sentinel" },
+        { role: "Duelist", slot: "Dive Duelist", requirements: "DIVE_DUELIST" },
+        { role: "Initiator", slot: "Flex (Utility)" }, // we still pick by logic later; this is a placeholder role
+      ];
+
+    case "DOUBLE_DUELIST":
+      return [
+        { role: "Controller", slot: "Controller" },
+        { role: "Initiator", slot: "Initiator" },
+        { role: "Sentinel", slot: "Sentinel" },
+        { role: "Duelist", slot: "Dive Duelist", requirements: "DIVE_DUELIST" },
+        { role: "Duelist", slot: "Duelist 2" },
+      ];
+
+    case "TRIPLE_INITIATOR":
+      // Fun / chaotic: 3 initiators + controller + dive duelist (no sentinel anchor)
+      return [
+        { role: "Controller", slot: "Controller" },
+        { role: "Duelist", slot: "Dive Duelist", requirements: "DIVE_DUELIST" },
+        { role: "Initiator", slot: "Initiator 1" },
+        { role: "Initiator", slot: "Initiator 2" },
+        { role: "Initiator", slot: "Initiator 3" },
+      ];
+
+    case "DOUBLE_CONTROLLER":
+      return [
+        { role: "Controller", slot: "Controller 1" },
+        { role: "Controller", slot: "Controller 2" },
+        { role: "Initiator", slot: "Initiator" },
+        { role: "Sentinel", slot: "Sentinel" },
+        { role: "Duelist", slot: "Dive Duelist", requirements: "DIVE_DUELIST" },
+      ];
+
+    case "DOUBLE_SENTINEL":
+      return [
+        { role: "Controller", slot: "Controller" },
+        { role: "Initiator", slot: "Initiator" },
+        { role: "Sentinel", slot: "Sentinel 1" },
+        { role: "Sentinel", slot: "Sentinel 2" },
+        { role: "Duelist", slot: "Dive Duelist", requirements: "DIVE_DUELIST" },
+      ];
+
+    case "CHAOS":
+    default:
+      // Keep at least: controller + dive duelist, then randomize the rest
+      return [
+        { role: "Controller", slot: "Controller" },
+        { role: "Duelist", slot: "Dive Duelist", requirements: "DIVE_DUELIST" },
+        { role: "Initiator", slot: "Wildcard 1" },
+        { role: "Sentinel", slot: "Wildcard 2" },
+        { role: "Duelist", slot: "Wildcard 3" },
+      ];
+  }
+}
+
+function buildQuickStrats(
+  map: Exclude<MapName, "Random">,
+  agents: Agent[],
+  style: CompStyle
+) {
   const hasSmokes = agents.some((a) => hasTag(a, "smokes"));
   const hasWall = agents.some((a) => hasTag(a, "wall"));
   const hasFlash = agents.some((a) => hasTag(a, "flash"));
@@ -199,12 +297,26 @@ function buildQuickStrats(map: Exclude<MapName, "Random">, agents: Agent[]) {
 
   const strats: string[] = [];
 
+  // Style-specific vibe
+  if (style === "TRIPLE_INITIATOR") {
+    strats.push("Triple Initiator: play for info + disables + layered flashes; win rounds by setting up unfair fights.");
+    strats.push("Defense: avoid solo anchors—stack/trade more and retake as a unit with utility waves.");
+  } else if (style === "DOUBLE_DUELIST") {
+    strats.push("Double Duelist: take space aggressively—one creates chaos, one trades. Commit fast off first advantage.");
+  } else if (style === "DOUBLE_CONTROLLER") {
+    strats.push("Double Controller: slow the map down—double smokes/walls isolate fights, then exec clean.");
+  } else if (style === "DOUBLE_SENTINEL") {
+    strats.push("Double Sentinel: punish flanks/pushes—play contact into traps, then collapse.");
+  } else if (style === "CHAOS") {
+    strats.push("Chaos: play off your strongest utility combo each round—don’t overthink, just trade and scale.");
+  }
+
   // Simple universal rules
   strats.push(
-    `Entry rule: pair ${dive}'s dive with ${hasFlash ? "a flash" : hasRecon ? "recon/info" : "a teammate swing"}—no dry dives.`
+    `Entry rule: pair ${dive}'s dive with ${hasFlash ? "a flash" : hasRecon ? "recon/info" : "a trade swing"} — no dry dives.`
   );
   strats.push(
-    `Default: ${hasRecon ? "info early, then collapse" : "spread for contact"}, ${hasSmokes ? "smoke chokes" : "take space slow"}, plant, then ${hasPostplant ? "play post-plant utility + time" : "play crossfires and trade"}.`
+    `Attack default: ${hasRecon ? "use info early" : "take contact carefully"}, ${hasSmokes ? "smoke key chokes" : "take space slowly"}, plant, then ${hasPostplant ? "play time + post-plant utility" : "play crossfires + trades"}.`
   );
   strats.push(
     `Defense: ${hasTrap ? "anchor with traps" : "play crossfires"}, ${hasRecon ? "recon for rotates" : "hold sound + timing"}, then retake with ${hasSmokes ? "smokes" : "numbers"} + ${hasFlash ? "flashes" : "trades"}.`
@@ -216,12 +328,12 @@ function buildQuickStrats(map: Exclude<MapName, "Random">, agents: Agent[]) {
       "Ascent retake: smoke CT + Heaven/Market, clear close first, then pinch."
     ],
     Bind: [
-      "Bind: sell pressure with short utility, then hit fast—TP fakes are your best friend.",
+      "Bind: sell pressure with short utility, then hit fast—TP fakes are huge value.",
       "Bind post-plant: play off-site positions; don’t all sit on site."
     ],
     Haven: [
       "Haven: default for info, then hit the weak site with a fast dive + trade train.",
-      "Haven defense: leave a fast rotator; don’t over-stack early without info."
+      "Haven defense: keep a fast rotator; don’t over-stack without info."
     ],
     Split: [
       "Split: Mid is everything—win Mid, then split B (Heaven+Main) or A (Ramps+Main).",
@@ -229,7 +341,7 @@ function buildQuickStrats(map: Exclude<MapName, "Random">, agents: Agent[]) {
     ],
     Lotus: [
       "Lotus: take A Main control, then pinch through Door/Tree when smokes are up.",
-      "Lotus defense: play for info and fast rotates—fakes happen a lot."
+      "Lotus defense: play for info and fast rotates—expect fakes."
     ],
     Sunset: [
       "Sunset: contest Mid early; win Mid → split B/A with smokes and quick trades.",
@@ -251,6 +363,10 @@ function buildQuickStrats(map: Exclude<MapName, "Random">, agents: Agent[]) {
       "Pearl: take Mid space, then split; smokes isolate Art/Link fights.",
       "Pearl defense: trap flank, recon mid, rotate early off info."
     ],
+    Corrode: [
+      "Corrode: take early info, then pick a lane and collapse fast—avoid slow solo lurks.",
+      "Corrode defense: play tight spacing for trades; rotate off confirmed info (don’t guess)."
+    ],
   };
 
   strats.push(...(mapCalls[map] ?? []));
@@ -258,24 +374,16 @@ function buildQuickStrats(map: Exclude<MapName, "Random">, agents: Agent[]) {
   // Utility nudges
   if (!hasRecon) strats.push("No recon: clear angles together and default more—avoid solo face-checks.");
   if (!hasFlash) strats.push("Low flash: take space with smokes + contact, then trade hard (2-man swing).");
-  if (hasWall && map !== "Icebox" && map !== "Breeze") strats.push("Wall utility: use it to cut sightlines and force close fights.");
+  if (hasWall && map !== "Icebox" && map !== "Breeze") strats.push("Wall utility: cut sightlines and force close fights.");
 
-  return strats.slice(0, 7);
-}
-
-function normalizeName(input: string) {
-  return input.trim();
-}
-
-function findAgentByNameExact(name: string) {
-  const n = normalizeName(name);
-  return AGENTS.find((a) => a.name === n) ?? null;
+  return strats.slice(0, 8);
 }
 
 function generateComp(args: {
   map: MapName;
   mode: Mode;
-  lockedRoles: Partial<Record<Exclude<Role, "Flex">, string>>; // role -> agent name
+  style: CompStyle;
+  lockedRoles: Partial<Record<Role, string>>; // role -> agent name (simple)
   excludedAgents: Set<string>;
 }): GeneratedComp {
   // Resolve map
@@ -294,12 +402,16 @@ function generateComp(args: {
     if (agent && excluded.has(agent)) {
       throw new Error(`Locked agent ${agent} is excluded. Remove it from excluded list.`);
     }
+    if (agent) {
+      const exists = AGENTS.find((a) => a.name === agent && a.roles.includes(role as Role));
+      if (!exists) throw new Error(`Locked agent ${agent} cannot play ${role}.`);
+    }
   }
 
-  // ✅ If duelist is locked, it MUST be a dive duelist
+  // ✅ If duelist is locked, it MUST be a dive duelist (because we guarantee one)
   if (args.lockedRoles.Duelist) {
     const locked = args.lockedRoles.Duelist;
-    const a = findAgentByNameExact(locked);
+    const a = AGENTS.find((x) => x.name === locked);
     if (!a) throw new Error(`Locked agent ${locked} not found.`);
     if (!a.roles.includes("Duelist")) throw new Error(`Locked agent ${locked} is not a Duelist.`);
     if (!isDiveDuelist(a)) {
@@ -312,38 +424,53 @@ function generateComp(args: {
   const chosen = new Set<string>();
   const picks: GeneratedPick[] = [];
 
-  function forcePick(role: Role, agentName: string) {
+  // If a role repeats (double controller, etc.), we only apply the lock once to avoid duplicates
+  const lockUsed = new Set<Role>();
+
+  function forcePick(role: Role, slot: string, agentName: string) {
     if (chosen.has(agentName)) return false;
     chosen.add(agentName);
-    picks.push({ role, agent: agentName });
+    picks.push({ role, slot, agent: agentName });
     return true;
   }
 
-  function pickFrom(
-    role: Exclude<Role, "Flex">,
-    pool: Agent[],
-    boosts: Array<(a: Agent) => boolean>
-  ) {
-    // If locked for that role, honor it
-    const locked = args.lockedRoles[role];
+  function pickFrom(role: Role, slot: string, pool: Agent[], boosts: Array<(a: Agent) => boolean>, mustDive = false) {
+    // honor lock only once per base role
+    const locked = !lockUsed.has(role) ? args.lockedRoles[role] : undefined;
     if (locked) {
+      lockUsed.add(role);
       const exists = AGENTS.find((a) => a.name === locked && a.roles.includes(role));
       if (!exists) throw new Error(`Locked agent ${locked} cannot play ${role}.`);
-      if (chosen.has(locked)) throw new Error(`Locked agent ${locked} already used by another role.`);
-      forcePick(role, locked);
+      if (chosen.has(locked)) throw new Error(`Locked agent ${locked} already used by another slot.`);
+      if (mustDive) {
+        const lockedA = AGENTS.find((a) => a.name === locked)!;
+        if (!isDiveDuelist(lockedA)) {
+          throw new Error(
+            `Dive Duelist required. Locked duelist "${locked}" is not a dive duelist. Use Jett/Raze/Neon/Yoru/Waylay.`
+          );
+        }
+      }
+      forcePick(role, slot, locked);
       return;
     }
 
     const available = pool.filter((a) => !chosen.has(a.name));
-    const wPool = weightedPool(available, boosts);
+    const filtered = mustDive ? available.filter(isDiveDuelist) : available;
+
+    const wPool = weightedPool(filtered, boosts);
     const picked = pickOne(wPool);
-    if (!picked) throw new Error(`No available agents left for role ${role}.`);
-    forcePick(role, picked.name);
+    if (!picked) throw new Error(`No available agents left for ${slot} (${role}).`);
+    forcePick(role, slot, picked.name);
   }
 
-  // ---- Required core ----
-  // Controller
+  const slots = getStyleSlots(args.style);
+
+  // Precompute some role pools
   const controllerBase = roleAgents("Controller", excluded);
+  const initiatorBase = roleAgents("Initiator", excluded);
+  const sentinelBase = roleAgents("Sentinel", excluded);
+  const duelistBase = roleAgents("Duelist", excluded);
+
   const controllerBoosts: Array<(a: Agent) => boolean> = [
     (a) => hasTag(a, "smokes"),
     (a) => (needs.preferWallController ? hasTag(a, "wall") : false),
@@ -351,131 +478,167 @@ function generateComp(args: {
     (a) => ((resolvedMap === "Bind" || resolvedMap === "Split") ? a.name === "Brimstone" : false),
     (a) => ((resolvedMap === "Breeze" || resolvedMap === "Icebox") ? a.name === "Viper" : false),
   ];
-  pickFrom("Controller", controllerBase, controllerBoosts);
 
-  // Initiator
-  const initiatorBase = roleAgents("Initiator", excluded);
   const initiatorBoosts: Array<(a: Agent) => boolean> = [
     (a) => (needs.preferRecon ? hasTag(a, "recon") : false),
     (a) => (needs.preferFlash ? hasTag(a, "flash") : false),
     (a) => (resolvedMap === "Ascent" ? a.name === "Sova" : false),
   ];
-  pickFrom("Initiator", initiatorBase, initiatorBoosts);
 
-  // Sentinel
-  const sentinelBase = roleAgents("Sentinel", excluded);
   const sentinelBoosts: Array<(a: Agent) => boolean> = [
     (a) => (needs.preferTrapSentinel ? hasTag(a, "trap") : false),
     (a) => (resolvedMap === "Ascent" ? a.name === "Killjoy" : false),
     (a) => (resolvedMap === "Breeze" ? a.name === "Cypher" : false),
   ];
-  pickFrom("Sentinel", sentinelBase, sentinelBoosts);
 
-  // ✅ DIVE DUELIST (always required)
-  {
-    const duelBaseAll = roleAgents("Duelist", excluded);
+  const duelistBoostsDive: Array<(a: Agent) => boolean> = [
+    (a) => (needs.preferExplosiveEntry ? a.name === "Raze" : false),
+    (a) => ((resolvedMap === "Ascent" || resolvedMap === "Haven") ? a.name === "Jett" : false),
+    (a) => (resolvedMap === "Split" ? a.name === "Raze" : false),
+    (a) => (resolvedMap === "Breeze" ? a.name === "Jett" : false),
+    (a) => (resolvedMap === "Bind" ? a.name === "Yoru" : false),
+  ];
 
-    // Only allow dive duelists in the required slot
-    const divePool = duelBaseAll.filter(isDiveDuelist);
+  const duelistBoostsGeneral: Array<(a: Agent) => boolean> = [
+    (a) => (needs.preferExplosiveEntry ? a.name === "Raze" : false),
+    (a) => (resolvedMap === "Bind" ? hasTag(a, "flash") : false),
+  ];
 
-    const duelBoosts: Array<(a: Agent) => boolean> = [
-      (a) => (needs.preferExplosiveEntry ? a.name === "Raze" : false),
-      (a) => ((resolvedMap === "Ascent" || resolvedMap === "Haven") ? a.name === "Jett" : false),
-      (a) => (resolvedMap === "Split" ? a.name === "Raze" : false),
-      (a) => (resolvedMap === "Breeze" ? a.name === "Jett" : false),
-    ];
-
-    pickFrom("Duelist", divePool, duelBoosts);
+  // Track utility coverage as we build (helps STANDARD "Flex (Utility)")
+  function currentPickedAgents() {
+    return picks.map((p) => AGENTS.find((a) => a.name === p.agent)!).filter(Boolean);
   }
 
-  // ---- FLEX logic ----
-  const pickedAgents = picks
-    .map((p) => AGENTS.find((a) => a.name === p.agent)!)
-    .filter(Boolean);
+   // Fill slots in order (✅ switch avoids TS "no overlap" comparison warnings)
+  for (const s of slots) {
+    switch (s.role) {
+      case "Controller": {
+        pickFrom("Controller", s.slot, controllerBase, controllerBoosts, false);
+        break;
+      }
 
-  const hasFlash = pickedAgents.some((a) => hasTag(a, "flash"));
-  const hasRecon = pickedAgents.some((a) => hasTag(a, "recon"));
-  const hasWall = pickedAgents.some((a) => hasTag(a, "wall"));
+      case "Initiator": {
+        // Special case: STANDARD has a "Flex (Utility)" placeholder
+        if (s.slot === "Flex (Utility)" && args.style === "STANDARD") {
+          const pickedAgents = currentPickedAgents();
+          const hasFlash = pickedAgents.some((a) => hasTag(a, "flash"));
+          const hasRecon = pickedAgents.some((a) => hasTag(a, "recon"));
+          const hasWall = pickedAgents.some((a) => hasTag(a, "wall"));
 
-  let flexPreference: "SecondController" | "SecondInitiator" | "SecondDuelist" | "SecondSentinel" =
-    "SecondInitiator";
+          let flexPref: "Controller" | "Initiator" | "Sentinel" | "Duelist" = "Initiator";
 
-  if (needs.preferDoubleController) flexPreference = "SecondController";
-  if (needs.preferWallController && !hasWall) flexPreference = "SecondController";
-  if (needs.preferFlash && !hasFlash) flexPreference = "SecondInitiator";
-  if (needs.preferRecon && !hasRecon) flexPreference = "SecondInitiator";
+          // Map needs influence
+          if (needs.preferDoubleController) flexPref = "Controller";
+          if (needs.preferWallController && !hasWall) flexPref = "Controller";
+          if (needs.preferFlash && !hasFlash) flexPref = "Initiator";
+          if (needs.preferRecon && !hasRecon) flexPref = "Initiator";
 
-  if (args.mode === "PRO") {
-    // Pro leans utility, but sometimes goes double-duelist
-    if (hasFlash && hasRecon) {
-      flexPreference = needs.preferDoubleController
-        ? "SecondController"
-        : Math.random() < 0.5
-        ? "SecondController"
-        : "SecondInitiator";
-    } else {
-      flexPreference = "SecondInitiator";
+          // ✅ (optional) allow second sentinel sometimes so flexPref can truly be "Sentinel"
+          if (needs.preferTrapSentinel && Math.random() < 0.12) flexPref = "Sentinel";
+
+          // Mode influence
+          if (args.mode === "PRO") {
+            if (hasFlash && hasRecon) {
+              flexPref = needs.preferDoubleController
+                ? "Controller"
+                : Math.random() < 0.5
+                ? "Controller"
+                : "Initiator";
+            } else {
+              flexPref = "Initiator";
+            }
+            if (Math.random() < 0.25) flexPref = "Duelist";
+          } else {
+            if (Math.random() < 0.15) flexPref = "Controller";
+          }
+
+          if (flexPref === "Controller") {
+            pickFrom("Controller", "Flex (Controller)", controllerBase, [
+              (a) => (needs.preferWallController ? hasTag(a, "wall") : false),
+              (a) => a.name === "Viper" && needs.preferWallController === true,
+            ]);
+          } else if (flexPref === "Duelist") {
+            pickFrom("Duelist", "Flex (Duelist)", duelistBase, duelistBoostsGeneral);
+          } else if (flexPref === "Sentinel") {
+            pickFrom("Sentinel", "Flex (Sentinel)", sentinelBase, [
+              (a) => (needs.preferTrapSentinel ? hasTag(a, "trap") : false),
+              (a) => hasTag(a, "stall"),
+            ]);
+          } else {
+            pickFrom("Initiator", "Flex (Initiator)", initiatorBase, [
+              (a) => (!hasFlash ? hasTag(a, "flash") : false),
+              (a) => (!hasRecon ? hasTag(a, "recon") : false),
+              ...initiatorBoosts,
+            ]);
+          }
+        } else {
+          pickFrom("Initiator", s.slot, initiatorBase, initiatorBoosts, false);
+        }
+        break;
+      }
+
+      case "Sentinel": {
+        pickFrom("Sentinel", s.slot, sentinelBase, sentinelBoosts, false);
+        break;
+      }
+
+      case "Duelist": {
+        const mustDive = s.requirements === "DIVE_DUELIST";
+        pickFrom(
+          "Duelist",
+          s.slot,
+          duelistBase,
+          mustDive ? duelistBoostsDive : duelistBoostsGeneral,
+          mustDive
+        );
+        break;
+      }
+
+      default: {
+        // Exhaustive safety
+        const _exhaustive: never = s.role;
+        throw new Error(`Unknown role slot: ${_exhaustive}`);
+      }
     }
-    if (Math.random() < 0.25) flexPreference = "SecondDuelist";
-  } else {
-    // Ranked: small chance for double controller
-    if (Math.random() < 0.15) flexPreference = "SecondController";
   }
-
-  function pickFlexFromRole(role: Exclude<Role, "Flex">, reasonBoost: Array<(a: Agent) => boolean>) {
-    const base = roleAgents(role, excluded).filter((a) => !chosen.has(a.name));
-    const pool = weightedPool(base, reasonBoost);
-    const picked = pickOne(pool);
-    if (!picked) throw new Error(`No available agents left for Flex as ${role}.`);
-    forcePick("Flex", picked.name);
-  }
-
-  if (flexPreference === "SecondController") {
-    pickFlexFromRole("Controller", [
-      (a) => (needs.preferWallController ? hasTag(a, "wall") : false),
-      (a) => a.name === "Viper" && needs.preferWallController === true,
-    ]);
-  } else if (flexPreference === "SecondInitiator") {
-    pickFlexFromRole("Initiator", [
-      (a) => (!hasFlash ? hasTag(a, "flash") : false),
-      (a) => (!hasRecon ? hasTag(a, "recon") : false),
-      (a) => (needs.preferFlash ? hasTag(a, "flash") : false),
-      (a) => (needs.preferRecon ? hasTag(a, "recon") : false),
-    ]);
-  } else if (flexPreference === "SecondDuelist") {
-    pickFlexFromRole("Duelist", [
-      (a) => (needs.preferExplosiveEntry ? a.name === "Raze" : false),
-      (a) => (a.name === "Jett" && (resolvedMap === "Haven" || resolvedMap === "Ascent")),
-      (a) => (a.name === "Yoru" && (needs.preferFlash || resolvedMap === "Bind")),
-    ]);
-  } else {
-    pickFlexFromRole("Sentinel", [
-      (a) => (needs.preferTrapSentinel ? hasTag(a, "trap") : false),
-      (a) => hasTag(a, "stall"),
-    ]);
-  }
+  // Ensure uniqueness
+  const names = picks.map((p) => p.agent);
+  if (uniq(names).length !== names.length) throw new Error("Internal error: duplicate agent generated.");
 
   // Notes
   const finalAgents = picks.map((p) => AGENTS.find((a) => a.name === p.agent)!).filter(Boolean);
   const notes: string[] = [];
 
-  notes.push("Core satisfied: smokes + initiator support + sentinel anchor.");
-  notes.push("Dive Duelist guaranteed: you always have a true entry option.");
+  const hasAnyController = finalAgents.some((a) => a.roles.includes("Controller"));
+  const hasAnyInitiator = finalAgents.some((a) => a.roles.includes("Initiator"));
+  const hasAnySentinel = finalAgents.some((a) => a.roles.includes("Sentinel"));
+  const hasDive = finalAgents.some(isDiveDuelist);
 
-  if (finalAgents.some((a) => hasTag(a, "flash"))) notes.push("Has flash utility to break angles and enable entries.");
-  if (finalAgents.some((a) => hasTag(a, "recon"))) notes.push("Has recon/info to take space safely and support retakes.");
-  if (finalAgents.some((a) => hasTag(a, "wall"))) notes.push("Has wall control for long sightlines / site takes.");
-  if (finalAgents.some((a) => hasTag(a, "postplant"))) notes.push("Has post-plant tools for securing rounds.");
+  notes.push(`Style: ${styleLabel(args.style)}.`);
+  if (hasAnyController) notes.push("Smokes present: you can take space + retake with structure.");
+  if (hasDive) notes.push("Dive duelist guaranteed: you have a true entry option every game.");
 
-  // Ensure uniqueness
-  const names = picks.map((p) => p.agent);
-  if (uniq(names).length !== names.length) throw new Error("Internal error: duplicate agent generated.");
+  if (hasAnyInitiator) {
+    if (finalAgents.some((a) => hasTag(a, "recon"))) notes.push("Info present: easier clears + safer retakes.");
+    if (finalAgents.some((a) => hasTag(a, "flash"))) notes.push("Flash present: better entries and angle-breaking.");
+  }
 
-  const strats = buildQuickStrats(resolvedMap, finalAgents);
+  if (hasAnySentinel) {
+    if (finalAgents.some((a) => hasTag(a, "trap"))) notes.push("Trap sentinel: strong flank control + anchoring.");
+    if (finalAgents.some((a) => hasTag(a, "stall"))) notes.push("Stall tools: buy time and disrupt execs.");
+  } else {
+    notes.push("Warning: no sentinel anchor—play tighter spacing and trade more (this is a fun style).");
+  }
+
+  if (finalAgents.some((a) => hasTag(a, "wall"))) notes.push("Wall utility: helps crosses / cuts sightlines.");
+  if (finalAgents.some((a) => hasTag(a, "postplant"))) notes.push("Post-plant tools: play time after plant.");
+
+  const strats = buildQuickStrats(resolvedMap, finalAgents, args.style);
 
   return {
     map: resolvedMap,
     mode: args.mode,
+    style: args.style,
     picks,
     notes,
     strats,
@@ -510,9 +673,10 @@ function Pill({
 
 export default function App() {
   const [mode, setMode] = useState<Mode>("RANKED");
+  const [style, setStyle] = useState<CompStyle>("STANDARD");
   const [selectedMap, setSelectedMap] = useState<MapName>("Random");
 
-  // Role locks: you can lock by typing agent name (simple MVP)
+  // Role locks: lock by typing agent name (simple MVP)
   const [lockController, setLockController] = useState("");
   const [lockInitiator, setLockInitiator] = useState("");
   const [lockSentinel, setLockSentinel] = useState("");
@@ -530,7 +694,7 @@ export default function App() {
   }, [excludedText]);
 
   const lockedRoles = useMemo(() => {
-    const obj: Partial<Record<Exclude<Role, "Flex">, string>> = {};
+    const obj: Partial<Record<Role, string>> = {};
     if (lockController.trim()) obj.Controller = lockController.trim();
     if (lockInitiator.trim()) obj.Initiator = lockInitiator.trim();
     if (lockSentinel.trim()) obj.Sentinel = lockSentinel.trim();
@@ -546,11 +710,12 @@ export default function App() {
       const comp = generateComp({
         map: selectedMap,
         mode,
+        style,
         lockedRoles,
         excludedAgents,
       });
       setResult(comp);
-      setHistory((h) => [comp, ...h].slice(0, 8));
+      setHistory((h) => [comp, ...h].slice(0, 10));
     } catch (e: any) {
       Alert.alert("Couldn’t roll a comp", e?.message ?? "Unknown error");
     }
@@ -565,9 +730,9 @@ export default function App() {
   return (
     <SafeAreaView style={styles.safe}>
       <ScrollView contentContainerStyle={styles.container}>
-        <Text style={styles.title}>Valorant Champions Comp Roller</Text>
+        <Text style={styles.title}>Valorant Comp Roller</Text>
         <Text style={styles.subtitle}>
-          Structured randomness: every roll keeps the roles needed to be viable — and always includes a dive duelist.
+          Structured randomness + fun presets. Every roll includes a dive duelist. (✅ Corrode added)
         </Text>
 
         <View style={styles.card}>
@@ -581,9 +746,46 @@ export default function App() {
           </View>
           <Text style={styles.helper}>
             {mode === "RANKED"
-              ? "Ranked: Controller + Initiator + Sentinel + Dive Duelist + Flex"
-              : "Pro-style: still forces Dive Duelist; Flex leans utility but can roll double duelist sometimes."}
+              ? "Ranked: more standard + slightly safer flex choices."
+              : "Pro-style: leans utility and sometimes goes spicier (double duelist odds)."}
           </Text>
+        </View>
+
+        <View style={styles.card}>
+          <Text style={styles.sectionTitle}>Comp Style</Text>
+          <Text style={styles.helper}>Pick a preset for fun variations.</Text>
+          <View style={styles.pillsWrap}>
+            <Pill
+              label="Standard"
+              active={style === "STANDARD"}
+              onPress={() => setStyle("STANDARD")}
+            />
+            <Pill
+              label="Double Duelist"
+              active={style === "DOUBLE_DUELIST"}
+              onPress={() => setStyle("DOUBLE_DUELIST")}
+            />
+            <Pill
+              label="Triple Initiator"
+              active={style === "TRIPLE_INITIATOR"}
+              onPress={() => setStyle("TRIPLE_INITIATOR")}
+            />
+            <Pill
+              label="Double Controller"
+              active={style === "DOUBLE_CONTROLLER"}
+              onPress={() => setStyle("DOUBLE_CONTROLLER")}
+            />
+            <Pill
+              label="Double Sentinel"
+              active={style === "DOUBLE_SENTINEL"}
+              onPress={() => setStyle("DOUBLE_SENTINEL")}
+            />
+            <Pill
+              label="Chaos"
+              active={style === "CHAOS"}
+              onPress={() => setStyle("CHAOS")}
+            />
+          </View>
         </View>
 
         <View style={styles.card}>
@@ -609,6 +811,7 @@ export default function App() {
           <Text style={styles.sectionTitle}>Role Locks (optional)</Text>
           <Text style={styles.helper}>
             Type an agent name exactly. Duelist lock must be a dive duelist.
+            Locks apply once per role even if the style repeats roles.
           </Text>
 
           <View style={styles.lockRow}>
@@ -684,12 +887,13 @@ export default function App() {
               Map: <Text style={styles.resultStrong}>{result.map}</Text> • Mode:{" "}
               <Text style={styles.resultStrong}>
                 {result.mode === "RANKED" ? "Ranked" : "Pro-Style"}
-              </Text>
+              </Text>{" "}
+              • Style: <Text style={styles.resultStrong}>{styleLabel(result.style)}</Text>
             </Text>
 
             {result.picks.map((p, idx) => (
-              <View key={`${p.role}-${p.agent}-${idx}`} style={styles.resultRow}>
-                <Text style={styles.resultRole}>{p.role}</Text>
+              <View key={`${p.slot}-${p.agent}-${idx}`} style={styles.resultRow}>
+                <Text style={styles.resultRole}>{p.slot}</Text>
                 <Text style={styles.resultAgent}>{p.agent}</Text>
               </View>
             ))}
@@ -716,10 +920,10 @@ export default function App() {
             {history.map((h, i) => (
               <View key={i} style={styles.historyItem}>
                 <Text style={styles.historyTitle}>
-                  {h.map} • {h.mode === "RANKED" ? "Ranked" : "Pro"}
+                  {h.map} • {h.mode === "RANKED" ? "Ranked" : "Pro"} • {styleLabel(h.style)}
                 </Text>
                 <Text style={styles.historyLine}>
-                  {h.picks.map((p) => `${p.role}:${p.agent}`).join(" | ")}
+                  {h.picks.map((p) => `${p.slot}:${p.agent}`).join(" | ")}
                 </Text>
               </View>
             ))}
@@ -790,7 +994,7 @@ const styles = StyleSheet.create({
   },
   rollBtnText: { color: "white", fontWeight: "900", letterSpacing: 1 },
 
-  resultHeader: { color: "#d7deea" },
+  resultHeader: { color: "#d7deea", lineHeight: 18 },
   resultStrong: { color: "white", fontWeight: "800" },
   resultRow: {
     flexDirection: "row",
