@@ -4,7 +4,7 @@ A lightweight web application that generates randomized competitive Valorant tea
 
 Instead of defaulting to the same meta agents every game, this app helps players experiment with new team strategies and combinations.
 
-🔗 Live Demo: (Add your Vercel URL here)
+🔗 Live Demo: (https://oomaximus-valorant-comp-roller-2e4b.vercel.app/)
 🔗 Repository: https://github.com/oomaximus/valorant-comp-roller
 
 🚀 Overview
