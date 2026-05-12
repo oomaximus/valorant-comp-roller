@@ -1,4 +1,4 @@
-import React, { useMemo, useState } from "react";
+import React, { useState, useEffect, useRef, useCallback } from "react";
 import {
   SafeAreaView,
   View,
@@ -6,1009 +6,757 @@ import {
   Pressable,
   ScrollView,
   StyleSheet,
-  Switch,
   TextInput,
   Alert,
+  Modal,
+  FlatList,
+  Platform,
 } from "react-native";
+import { StatusBar } from "expo-status-bar";
+import { CameraView, useCameraPermissions, BarcodeScanningResult } from "expo-camera";
+import AsyncStorage from "@react-native-async-storage/async-storage";
 
-/**
- * Valorant Comp Roller (Fun MVP+)
- * - Map selector + Random (✅ includes Corrode)
- * - Mode: Ranked vs Pro (affects weighting + flex tendencies)
- * - Role locks (simple: 1 lock per base role)
- * - Exclude agents
- * - ✅ Dive Duelist REQUIRED on every map
- * - ✅ Comp Style presets: Standard / Double Duelist / Triple Initiator / Double Controller / Double Sentinel / Chaos
- * - ✅ Quick Strats generated from map + comp
- */
+// ─── Types ────────────────────────────────────────────────────────────────────
 
-type Role = "Duelist" | "Controller" | "Initiator" | "Sentinel";
-type Mode = "RANKED" | "PRO";
-
-type CompStyle =
-  | "STANDARD"
-  | "DOUBLE_DUELIST"
-  | "TRIPLE_INITIATOR"
-  | "DOUBLE_CONTROLLER"
-  | "DOUBLE_SENTINEL"
-  | "CHAOS";
-
-type Tag =
-  | "flash"
-  | "recon"
-  | "smokes"
-  | "wall"
-  | "trap"
-  | "stall"
-  | "entry"
-  | "antiExec"
-  | "postplant"
-  | "dive";
-
-type Agent = {
+type InventoryItem = {
+  id: string;
+  barcode: string;
   name: string;
-  roles: Role[];
-  tags: Tag[];
+  quantity: number;
+  location?: string;
+  notes?: string;
+  updatedAt: number;
 };
 
-type MapName =
-  | "Ascent"
-  | "Bind"
-  | "Haven"
-  | "Split"
-  | "Lotus"
-  | "Sunset"
-  | "Icebox"
-  | "Breeze"
-  | "Fracture"
-  | "Pearl"
-  | "Corrode"
-  | "Random";
+type Screen = "scanner" | "inventory" | "add" | "detail";
 
-type MapNeeds = {
-  preferDoubleController: boolean;
-  preferRecon: boolean;
-  preferFlash: boolean;
-  preferTrapSentinel: boolean;
-  preferWallController: boolean;
-  preferExplosiveEntry: boolean;
-};
+const STORAGE_KEY = "inventory_items";
 
-type MapProfile = {
-  name: Exclude<MapName, "Random">;
-  needs: Partial<MapNeeds>;
-};
+// ─── Helpers ──────────────────────────────────────────────────────────────────
 
-// ---- Agent Pool (update anytime) ----
-const AGENTS: Agent[] = [
-  // Controllers
-  { name: "Omen", roles: ["Controller"], tags: ["smokes"] },
-  { name: "Brimstone", roles: ["Controller"], tags: ["smokes", "postplant"] },
-  { name: "Astra", roles: ["Controller"], tags: ["smokes", "antiExec"] },
-  { name: "Viper", roles: ["Controller"], tags: ["smokes", "wall", "postplant"] },
-  { name: "Harbor", roles: ["Controller"], tags: ["smokes", "wall"] },
-  { name: "Clove", roles: ["Controller"], tags: ["smokes"] },
-
-  // Initiators
-  { name: "Sova", roles: ["Initiator"], tags: ["recon"] },
-  { name: "Fade", roles: ["Initiator"], tags: ["recon"] },
-  { name: "Skye", roles: ["Initiator"], tags: ["flash", "recon"] },
-  { name: "KAY/O", roles: ["Initiator"], tags: ["flash", "antiExec"] },
-  { name: "Breach", roles: ["Initiator"], tags: ["flash"] },
-  { name: "Gekko", roles: ["Initiator"], tags: ["flash", "postplant"] },
-
-  // NEW: Initiator
-  { name: "Tejo", roles: ["Initiator"], tags: ["recon"] },
-
-  // Sentinels
-  { name: "Killjoy", roles: ["Sentinel"], tags: ["trap", "postplant"] },
-  { name: "Cypher", roles: ["Sentinel"], tags: ["trap", "recon"] },
-  { name: "Sage", roles: ["Sentinel"], tags: ["stall"] },
-  { name: "Deadlock", roles: ["Sentinel"], tags: ["stall", "antiExec"] },
-  { name: "Chamber", roles: ["Sentinel"], tags: ["trap"] },
-
-  // NEW: Sentinels
-  { name: "Veto", roles: ["Sentinel"], tags: ["trap"] },
-  { name: "Vyse", roles: ["Sentinel"], tags: ["stall"] },
-
-  // Duelists (✅ mark dive duelists)
-  { name: "Jett", roles: ["Duelist"], tags: ["entry", "dive"] },
-  { name: "Raze", roles: ["Duelist"], tags: ["entry", "dive"] },
-  { name: "Neon", roles: ["Duelist"], tags: ["entry", "dive"] },
-  { name: "Yoru", roles: ["Duelist"], tags: ["flash", "entry", "dive"] },
-  { name: "Waylay", roles: ["Duelist"], tags: ["entry", "dive"] },
-
-  // Non-dive duelists (allowed in additional duelist slots)
-  { name: "Reyna", roles: ["Duelist"], tags: ["entry"] },
-  { name: "Phoenix", roles: ["Duelist"], tags: ["flash", "entry"] },
-  { name: "Iso", roles: ["Duelist"], tags: ["entry"] },
-];
-
-// ---- Maps + preferences (lightweight) ----
-const MAPS: MapProfile[] = [
-  { name: "Ascent", needs: { preferRecon: true, preferTrapSentinel: true } },
-  { name: "Bind", needs: { preferFlash: true, preferTrapSentinel: true } },
-  { name: "Haven", needs: { preferRecon: true, preferFlash: true } },
-  { name: "Split", needs: { preferFlash: true, preferTrapSentinel: true, preferExplosiveEntry: true } },
-  { name: "Lotus", needs: { preferFlash: true, preferRecon: true, preferTrapSentinel: true } },
-  { name: "Sunset", needs: { preferRecon: true, preferTrapSentinel: true } },
-  { name: "Icebox", needs: { preferWallController: true, preferRecon: true } },
-  { name: "Breeze", needs: { preferWallController: true, preferRecon: true, preferDoubleController: true } },
-  { name: "Fracture", needs: { preferFlash: true, preferTrapSentinel: true } },
-  { name: "Pearl", needs: { preferRecon: true, preferDoubleController: true } },
-
-  // ✅ NEW MAP
-  // (Lightweight guess: tends to like info + flash + solid anchoring)
-  { name: "Corrode", needs: { preferRecon: true, preferFlash: true, preferTrapSentinel: true } },
-];
-
-function resolveNeeds(profile: MapProfile): MapNeeds {
-  return {
-    preferDoubleController: false,
-    preferRecon: false,
-    preferFlash: false,
-    preferTrapSentinel: false,
-    preferWallController: false,
-    preferExplosiveEntry: false,
-    ...profile.needs,
-  };
+function generateId(): string {
+  return Math.random().toString(36).slice(2) + Date.now().toString(36);
 }
 
-function randInt(maxExclusive: number) {
-  return Math.floor(Math.random() * maxExclusive);
+function formatDate(ts: number): string {
+  return new Date(ts).toLocaleDateString(undefined, {
+    month: "short",
+    day: "numeric",
+    year: "numeric",
+  });
 }
 
-function pickOne<T>(arr: T[]): T | null {
-  if (arr.length === 0) return null;
-  return arr[randInt(arr.length)];
-}
-
-function uniq<T>(arr: T[]) {
-  return Array.from(new Set(arr));
-}
-
-function hasTag(agent: Agent, tag: Tag) {
-  return agent.tags.includes(tag);
-}
-
-function isDiveDuelist(agent: Agent) {
-  return agent.roles.includes("Duelist") && hasTag(agent, "dive");
-}
-
-function roleAgents(role: Role, excluded: Set<string>) {
-  return AGENTS.filter((a) => a.roles.includes(role) && !excluded.has(a.name));
-}
-
-// Weighted pick: duplicates in pool increase odds (simple & effective)
-function weightedPool(base: Agent[], boosts: Array<(a: Agent) => boolean>) {
-  const pool: Agent[] = [...base];
-  for (const a of base) {
-    for (const b of boosts) {
-      if (b(a)) pool.push(a);
-    }
-  }
-  return pool;
-}
-
-type GeneratedPick = { slot: string; role: Role; agent: string };
-type GeneratedComp = {
-  map: Exclude<MapName, "Random">;
-  mode: Mode;
-  style: CompStyle;
-  picks: GeneratedPick[];
-  notes: string[];
-  strats: string[];
-};
-
-function styleLabel(style: CompStyle) {
-  switch (style) {
-    case "STANDARD":
-      return "Standard (Balanced)";
-    case "DOUBLE_DUELIST":
-      return "Double Duelist";
-    case "TRIPLE_INITIATOR":
-      return "Triple Initiator (Chaos Utility)";
-    case "DOUBLE_CONTROLLER":
-      return "Double Controller";
-    case "DOUBLE_SENTINEL":
-      return "Double Sentinel";
-    case "CHAOS":
-      return "Chaos (Anything Goes)";
-  }
-}
-
-function getStyleSlots(style: CompStyle): Array<{ role: Role; slot: string; requirements?: "DIVE_DUELIST" }> {
-  // Always 5 players
-  // ✅ Dive duelist ALWAYS required (either a dedicated slot, or enforced within the first duelist slot)
-  switch (style) {
-    case "STANDARD":
-      // Controller + Initiator + Sentinel + Dive Duelist + Flex-ish (weighted)
-      return [
-        { role: "Controller", slot: "Controller" },
-        { role: "Initiator", slot: "Initiator" },
-        { role: "Sentinel", slot: "Sentinel" },
-        { role: "Duelist", slot: "Dive Duelist", requirements: "DIVE_DUELIST" },
-        { role: "Initiator", slot: "Flex (Utility)" }, // we still pick by logic later; this is a placeholder role
-      ];
-
-    case "DOUBLE_DUELIST":
-      return [
-        { role: "Controller", slot: "Controller" },
-        { role: "Initiator", slot: "Initiator" },
-        { role: "Sentinel", slot: "Sentinel" },
-        { role: "Duelist", slot: "Dive Duelist", requirements: "DIVE_DUELIST" },
-        { role: "Duelist", slot: "Duelist 2" },
-      ];
-
-    case "TRIPLE_INITIATOR":
-      // Fun / chaotic: 3 initiators + controller + dive duelist (no sentinel anchor)
-      return [
-        { role: "Controller", slot: "Controller" },
-        { role: "Duelist", slot: "Dive Duelist", requirements: "DIVE_DUELIST" },
-        { role: "Initiator", slot: "Initiator 1" },
-        { role: "Initiator", slot: "Initiator 2" },
-        { role: "Initiator", slot: "Initiator 3" },
-      ];
-
-    case "DOUBLE_CONTROLLER":
-      return [
-        { role: "Controller", slot: "Controller 1" },
-        { role: "Controller", slot: "Controller 2" },
-        { role: "Initiator", slot: "Initiator" },
-        { role: "Sentinel", slot: "Sentinel" },
-        { role: "Duelist", slot: "Dive Duelist", requirements: "DIVE_DUELIST" },
-      ];
-
-    case "DOUBLE_SENTINEL":
-      return [
-        { role: "Controller", slot: "Controller" },
-        { role: "Initiator", slot: "Initiator" },
-        { role: "Sentinel", slot: "Sentinel 1" },
-        { role: "Sentinel", slot: "Sentinel 2" },
-        { role: "Duelist", slot: "Dive Duelist", requirements: "DIVE_DUELIST" },
-      ];
-
-    case "CHAOS":
-    default:
-      // Keep at least: controller + dive duelist, then randomize the rest
-      return [
-        { role: "Controller", slot: "Controller" },
-        { role: "Duelist", slot: "Dive Duelist", requirements: "DIVE_DUELIST" },
-        { role: "Initiator", slot: "Wildcard 1" },
-        { role: "Sentinel", slot: "Wildcard 2" },
-        { role: "Duelist", slot: "Wildcard 3" },
-      ];
-  }
-}
-
-function buildQuickStrats(
-  map: Exclude<MapName, "Random">,
-  agents: Agent[],
-  style: CompStyle
-) {
-  const hasSmokes = agents.some((a) => hasTag(a, "smokes"));
-  const hasWall = agents.some((a) => hasTag(a, "wall"));
-  const hasFlash = agents.some((a) => hasTag(a, "flash"));
-  const hasRecon = agents.some((a) => hasTag(a, "recon"));
-  const hasTrap = agents.some((a) => hasTag(a, "trap"));
-  const hasPostplant = agents.some((a) => hasTag(a, "postplant"));
-
-  const dive = agents.find((a) => isDiveDuelist(a))?.name ?? "Dive Duelist";
-
-  const strats: string[] = [];
-
-  // Style-specific vibe
-  if (style === "TRIPLE_INITIATOR") {
-    strats.push("Triple Initiator: play for info + disables + layered flashes; win rounds by setting up unfair fights.");
-    strats.push("Defense: avoid solo anchors—stack/trade more and retake as a unit with utility waves.");
-  } else if (style === "DOUBLE_DUELIST") {
-    strats.push("Double Duelist: take space aggressively—one creates chaos, one trades. Commit fast off first advantage.");
-  } else if (style === "DOUBLE_CONTROLLER") {
-    strats.push("Double Controller: slow the map down—double smokes/walls isolate fights, then exec clean.");
-  } else if (style === "DOUBLE_SENTINEL") {
-    strats.push("Double Sentinel: punish flanks/pushes—play contact into traps, then collapse.");
-  } else if (style === "CHAOS") {
-    strats.push("Chaos: play off your strongest utility combo each round—don’t overthink, just trade and scale.");
-  }
-
-  // Simple universal rules
-  strats.push(
-    `Entry rule: pair ${dive}'s dive with ${hasFlash ? "a flash" : hasRecon ? "recon/info" : "a trade swing"} — no dry dives.`
-  );
-  strats.push(
-    `Attack default: ${hasRecon ? "use info early" : "take contact carefully"}, ${hasSmokes ? "smoke key chokes" : "take space slowly"}, plant, then ${hasPostplant ? "play time + post-plant utility" : "play crossfires + trades"}.`
-  );
-  strats.push(
-    `Defense: ${hasTrap ? "anchor with traps" : "play crossfires"}, ${hasRecon ? "recon for rotates" : "hold sound + timing"}, then retake with ${hasSmokes ? "smokes" : "numbers"} + ${hasFlash ? "flashes" : "trades"}.`
-  );
-
-  const mapCalls: Record<Exclude<MapName, "Random">, string[]> = {
-    Ascent: [
-      "Ascent: contest Mid early; once Mid is yours, split A/B with smokes.",
-      "Ascent retake: smoke CT + Heaven/Market, clear close first, then pinch."
-    ],
-    Bind: [
-      "Bind: sell pressure with short utility, then hit fast—TP fakes are huge value.",
-      "Bind post-plant: play off-site positions; don’t all sit on site."
-    ],
-    Haven: [
-      "Haven: default for info, then hit the weak site with a fast dive + trade train.",
-      "Haven defense: keep a fast rotator; don’t over-stack without info."
-    ],
-    Split: [
-      "Split: Mid is everything—win Mid, then split B (Heaven+Main) or A (Ramps+Main).",
-      "Split execute: smoke Heaven/CT, flash close, dive in on contact."
-    ],
-    Lotus: [
-      "Lotus: take A Main control, then pinch through Door/Tree when smokes are up.",
-      "Lotus defense: play for info and fast rotates—expect fakes."
-    ],
-    Sunset: [
-      "Sunset: contest Mid early; win Mid → split B/A with smokes and quick trades.",
-      "Sunset defense: trap Mid/Market and rotate off first info ping."
-    ],
-    Icebox: [
-      "Icebox: use wall/smokes to cross; dive creates chaos while team plants safely.",
-      "Icebox defense: play info then retake together—don’t feed 1v1s."
-    ],
-    Breeze: [
-      "Breeze: long lanes—use wall/smokes to cross, recon to clear, then dive off tags.",
-      "Breeze default: slower is fine; punish pushes and hit late with full util."
-    ],
-    Fracture: [
-      "Fracture: pinch attacks—hit from BOTH sides; smokes isolate fights; dive breaks site.",
-      "Fracture defense: lean retake setups; collapse with utility when they commit."
-    ],
-    Pearl: [
-      "Pearl: take Mid space, then split; smokes isolate Art/Link fights.",
-      "Pearl defense: trap flank, recon mid, rotate early off info."
-    ],
-    Corrode: [
-      "Corrode: take early info, then pick a lane and collapse fast—avoid slow solo lurks.",
-      "Corrode defense: play tight spacing for trades; rotate off confirmed info (don’t guess)."
-    ],
-  };
-
-  strats.push(...(mapCalls[map] ?? []));
-
-  // Utility nudges
-  if (!hasRecon) strats.push("No recon: clear angles together and default more—avoid solo face-checks.");
-  if (!hasFlash) strats.push("Low flash: take space with smokes + contact, then trade hard (2-man swing).");
-  if (hasWall && map !== "Icebox" && map !== "Breeze") strats.push("Wall utility: cut sightlines and force close fights.");
-
-  return strats.slice(0, 8);
-}
-
-function generateComp(args: {
-  map: MapName;
-  mode: Mode;
-  style: CompStyle;
-  lockedRoles: Partial<Record<Role, string>>; // role -> agent name (simple)
-  excludedAgents: Set<string>;
-}): GeneratedComp {
-  // Resolve map
-  const resolvedMap =
-    args.map === "Random"
-      ? MAPS[randInt(MAPS.length)].name
-      : (args.map as Exclude<MapName, "Random">);
-
-  const profile = MAPS.find((m) => m.name === resolvedMap)!;
-  const needs = resolveNeeds(profile);
-
-  const excluded = new Set(args.excludedAgents);
-
-  // If locked agent is excluded, error early
-  for (const [role, agent] of Object.entries(args.lockedRoles)) {
-    if (agent && excluded.has(agent)) {
-      throw new Error(`Locked agent ${agent} is excluded. Remove it from excluded list.`);
-    }
-    if (agent) {
-      const exists = AGENTS.find((a) => a.name === agent && a.roles.includes(role as Role));
-      if (!exists) throw new Error(`Locked agent ${agent} cannot play ${role}.`);
-    }
-  }
-
-  // ✅ If duelist is locked, it MUST be a dive duelist (because we guarantee one)
-  if (args.lockedRoles.Duelist) {
-    const locked = args.lockedRoles.Duelist;
-    const a = AGENTS.find((x) => x.name === locked);
-    if (!a) throw new Error(`Locked agent ${locked} not found.`);
-    if (!a.roles.includes("Duelist")) throw new Error(`Locked agent ${locked} is not a Duelist.`);
-    if (!isDiveDuelist(a)) {
-      throw new Error(
-        `Dive Duelist required on every map. "${locked}" is not marked as a dive duelist. Try: Jett, Raze, Neon, Yoru, Waylay.`
-      );
-    }
-  }
-
-  const chosen = new Set<string>();
-  const picks: GeneratedPick[] = [];
-
-  // If a role repeats (double controller, etc.), we only apply the lock once to avoid duplicates
-  const lockUsed = new Set<Role>();
-
-  function forcePick(role: Role, slot: string, agentName: string) {
-    if (chosen.has(agentName)) return false;
-    chosen.add(agentName);
-    picks.push({ role, slot, agent: agentName });
-    return true;
-  }
-
-  function pickFrom(role: Role, slot: string, pool: Agent[], boosts: Array<(a: Agent) => boolean>, mustDive = false) {
-    // honor lock only once per base role
-    const locked = !lockUsed.has(role) ? args.lockedRoles[role] : undefined;
-    if (locked) {
-      lockUsed.add(role);
-      const exists = AGENTS.find((a) => a.name === locked && a.roles.includes(role));
-      if (!exists) throw new Error(`Locked agent ${locked} cannot play ${role}.`);
-      if (chosen.has(locked)) throw new Error(`Locked agent ${locked} already used by another slot.`);
-      if (mustDive) {
-        const lockedA = AGENTS.find((a) => a.name === locked)!;
-        if (!isDiveDuelist(lockedA)) {
-          throw new Error(
-            `Dive Duelist required. Locked duelist "${locked}" is not a dive duelist. Use Jett/Raze/Neon/Yoru/Waylay.`
-          );
-        }
-      }
-      forcePick(role, slot, locked);
-      return;
-    }
-
-    const available = pool.filter((a) => !chosen.has(a.name));
-    const filtered = mustDive ? available.filter(isDiveDuelist) : available;
-
-    const wPool = weightedPool(filtered, boosts);
-    const picked = pickOne(wPool);
-    if (!picked) throw new Error(`No available agents left for ${slot} (${role}).`);
-    forcePick(role, slot, picked.name);
-  }
-
-  const slots = getStyleSlots(args.style);
-
-  // Precompute some role pools
-  const controllerBase = roleAgents("Controller", excluded);
-  const initiatorBase = roleAgents("Initiator", excluded);
-  const sentinelBase = roleAgents("Sentinel", excluded);
-  const duelistBase = roleAgents("Duelist", excluded);
-
-  const controllerBoosts: Array<(a: Agent) => boolean> = [
-    (a) => hasTag(a, "smokes"),
-    (a) => (needs.preferWallController ? hasTag(a, "wall") : false),
-    (a) => (resolvedMap === "Ascent" ? a.name === "Omen" : false),
-    (a) => ((resolvedMap === "Bind" || resolvedMap === "Split") ? a.name === "Brimstone" : false),
-    (a) => ((resolvedMap === "Breeze" || resolvedMap === "Icebox") ? a.name === "Viper" : false),
-  ];
-
-  const initiatorBoosts: Array<(a: Agent) => boolean> = [
-    (a) => (needs.preferRecon ? hasTag(a, "recon") : false),
-    (a) => (needs.preferFlash ? hasTag(a, "flash") : false),
-    (a) => (resolvedMap === "Ascent" ? a.name === "Sova" : false),
-  ];
-
-  const sentinelBoosts: Array<(a: Agent) => boolean> = [
-    (a) => (needs.preferTrapSentinel ? hasTag(a, "trap") : false),
-    (a) => (resolvedMap === "Ascent" ? a.name === "Killjoy" : false),
-    (a) => (resolvedMap === "Breeze" ? a.name === "Cypher" : false),
-  ];
-
-  const duelistBoostsDive: Array<(a: Agent) => boolean> = [
-    (a) => (needs.preferExplosiveEntry ? a.name === "Raze" : false),
-    (a) => ((resolvedMap === "Ascent" || resolvedMap === "Haven") ? a.name === "Jett" : false),
-    (a) => (resolvedMap === "Split" ? a.name === "Raze" : false),
-    (a) => (resolvedMap === "Breeze" ? a.name === "Jett" : false),
-    (a) => (resolvedMap === "Bind" ? a.name === "Yoru" : false),
-  ];
-
-  const duelistBoostsGeneral: Array<(a: Agent) => boolean> = [
-    (a) => (needs.preferExplosiveEntry ? a.name === "Raze" : false),
-    (a) => (resolvedMap === "Bind" ? hasTag(a, "flash") : false),
-  ];
-
-  // Track utility coverage as we build (helps STANDARD "Flex (Utility)")
-  function currentPickedAgents() {
-    return picks.map((p) => AGENTS.find((a) => a.name === p.agent)!).filter(Boolean);
-  }
-
-   // Fill slots in order (✅ switch avoids TS "no overlap" comparison warnings)
-  for (const s of slots) {
-    switch (s.role) {
-      case "Controller": {
-        pickFrom("Controller", s.slot, controllerBase, controllerBoosts, false);
-        break;
-      }
-
-      case "Initiator": {
-        // Special case: STANDARD has a "Flex (Utility)" placeholder
-        if (s.slot === "Flex (Utility)" && args.style === "STANDARD") {
-          const pickedAgents = currentPickedAgents();
-          const hasFlash = pickedAgents.some((a) => hasTag(a, "flash"));
-          const hasRecon = pickedAgents.some((a) => hasTag(a, "recon"));
-          const hasWall = pickedAgents.some((a) => hasTag(a, "wall"));
-
-          let flexPref: "Controller" | "Initiator" | "Sentinel" | "Duelist" = "Initiator";
-
-          // Map needs influence
-          if (needs.preferDoubleController) flexPref = "Controller";
-          if (needs.preferWallController && !hasWall) flexPref = "Controller";
-          if (needs.preferFlash && !hasFlash) flexPref = "Initiator";
-          if (needs.preferRecon && !hasRecon) flexPref = "Initiator";
-
-          // ✅ (optional) allow second sentinel sometimes so flexPref can truly be "Sentinel"
-          if (needs.preferTrapSentinel && Math.random() < 0.12) flexPref = "Sentinel";
-
-          // Mode influence
-          if (args.mode === "PRO") {
-            if (hasFlash && hasRecon) {
-              flexPref = needs.preferDoubleController
-                ? "Controller"
-                : Math.random() < 0.5
-                ? "Controller"
-                : "Initiator";
-            } else {
-              flexPref = "Initiator";
-            }
-            if (Math.random() < 0.25) flexPref = "Duelist";
-          } else {
-            if (Math.random() < 0.15) flexPref = "Controller";
-          }
-
-          if (flexPref === "Controller") {
-            pickFrom("Controller", "Flex (Controller)", controllerBase, [
-              (a) => (needs.preferWallController ? hasTag(a, "wall") : false),
-              (a) => a.name === "Viper" && needs.preferWallController === true,
-            ]);
-          } else if (flexPref === "Duelist") {
-            pickFrom("Duelist", "Flex (Duelist)", duelistBase, duelistBoostsGeneral);
-          } else if (flexPref === "Sentinel") {
-            pickFrom("Sentinel", "Flex (Sentinel)", sentinelBase, [
-              (a) => (needs.preferTrapSentinel ? hasTag(a, "trap") : false),
-              (a) => hasTag(a, "stall"),
-            ]);
-          } else {
-            pickFrom("Initiator", "Flex (Initiator)", initiatorBase, [
-              (a) => (!hasFlash ? hasTag(a, "flash") : false),
-              (a) => (!hasRecon ? hasTag(a, "recon") : false),
-              ...initiatorBoosts,
-            ]);
-          }
-        } else {
-          pickFrom("Initiator", s.slot, initiatorBase, initiatorBoosts, false);
-        }
-        break;
-      }
-
-      case "Sentinel": {
-        pickFrom("Sentinel", s.slot, sentinelBase, sentinelBoosts, false);
-        break;
-      }
-
-      case "Duelist": {
-        const mustDive = s.requirements === "DIVE_DUELIST";
-        pickFrom(
-          "Duelist",
-          s.slot,
-          duelistBase,
-          mustDive ? duelistBoostsDive : duelistBoostsGeneral,
-          mustDive
-        );
-        break;
-      }
-
-      default: {
-        // Exhaustive safety
-        const _exhaustive: never = s.role;
-        throw new Error(`Unknown role slot: ${_exhaustive}`);
-      }
-    }
-  }
-  // Ensure uniqueness
-  const names = picks.map((p) => p.agent);
-  if (uniq(names).length !== names.length) throw new Error("Internal error: duplicate agent generated.");
-
-  // Notes
-  const finalAgents = picks.map((p) => AGENTS.find((a) => a.name === p.agent)!).filter(Boolean);
-  const notes: string[] = [];
-
-  const hasAnyController = finalAgents.some((a) => a.roles.includes("Controller"));
-  const hasAnyInitiator = finalAgents.some((a) => a.roles.includes("Initiator"));
-  const hasAnySentinel = finalAgents.some((a) => a.roles.includes("Sentinel"));
-  const hasDive = finalAgents.some(isDiveDuelist);
-
-  notes.push(`Style: ${styleLabel(args.style)}.`);
-  if (hasAnyController) notes.push("Smokes present: you can take space + retake with structure.");
-  if (hasDive) notes.push("Dive duelist guaranteed: you have a true entry option every game.");
-
-  if (hasAnyInitiator) {
-    if (finalAgents.some((a) => hasTag(a, "recon"))) notes.push("Info present: easier clears + safer retakes.");
-    if (finalAgents.some((a) => hasTag(a, "flash"))) notes.push("Flash present: better entries and angle-breaking.");
-  }
-
-  if (hasAnySentinel) {
-    if (finalAgents.some((a) => hasTag(a, "trap"))) notes.push("Trap sentinel: strong flank control + anchoring.");
-    if (finalAgents.some((a) => hasTag(a, "stall"))) notes.push("Stall tools: buy time and disrupt execs.");
-  } else {
-    notes.push("Warning: no sentinel anchor—play tighter spacing and trade more (this is a fun style).");
-  }
-
-  if (finalAgents.some((a) => hasTag(a, "wall"))) notes.push("Wall utility: helps crosses / cuts sightlines.");
-  if (finalAgents.some((a) => hasTag(a, "postplant"))) notes.push("Post-plant tools: play time after plant.");
-
-  const strats = buildQuickStrats(resolvedMap, finalAgents, args.style);
-
-  return {
-    map: resolvedMap,
-    mode: args.mode,
-    style: args.style,
-    picks,
-    notes,
-    strats,
-  };
-}
-
-function Pill({
-  label,
-  active,
-  onPress,
-}: {
-  label: string;
-  active?: boolean;
-  onPress?: () => void;
-}) {
-  return (
-    <Pressable
-      onPress={onPress}
-      style={[styles.pill, active ? styles.pillActive : styles.pillInactive]}
-    >
-      <Text
-        style={[
-          styles.pillText,
-          active ? styles.pillTextActive : styles.pillTextInactive,
-        ]}
-      >
-        {label}
-      </Text>
-    </Pressable>
-  );
-}
+// ─── App ──────────────────────────────────────────────────────────────────────
 
 export default function App() {
-  const [mode, setMode] = useState<Mode>("RANKED");
-  const [style, setStyle] = useState<CompStyle>("STANDARD");
-  const [selectedMap, setSelectedMap] = useState<MapName>("Random");
+  const [screen, setScreen] = useState<Screen>("scanner");
+  const [items, setItems] = useState<InventoryItem[]>([]);
+  const [scannedBarcode, setScannedBarcode] = useState<string | null>(null);
+  const [selectedItem, setSelectedItem] = useState<InventoryItem | null>(null);
+  const [searchQuery, setSearchQuery] = useState("");
+  const [scanEnabled, setScanEnabled] = useState(true);
+  const [permission, requestPermission] = useCameraPermissions();
+  const scanCooldown = useRef(false);
 
-  // Role locks: lock by typing agent name (simple MVP)
-  const [lockController, setLockController] = useState("");
-  const [lockInitiator, setLockInitiator] = useState("");
-  const [lockSentinel, setLockSentinel] = useState("");
-  const [lockDuelist, setLockDuelist] = useState("");
+  // ── Persistence ─────────────────────────────────────────────────────────────
 
-  const [excludedText, setExcludedText] = useState(""); // comma-separated
-  const excludedAgents = useMemo(() => {
-    const set = new Set<string>();
-    excludedText
-      .split(",")
-      .map((s) => s.trim())
-      .filter(Boolean)
-      .forEach((name) => set.add(name));
-    return set;
-  }, [excludedText]);
+  useEffect(() => {
+    AsyncStorage.getItem(STORAGE_KEY).then((raw) => {
+      if (raw) setItems(JSON.parse(raw));
+    });
+  }, []);
 
-  const lockedRoles = useMemo(() => {
-    const obj: Partial<Record<Role, string>> = {};
-    if (lockController.trim()) obj.Controller = lockController.trim();
-    if (lockInitiator.trim()) obj.Initiator = lockInitiator.trim();
-    if (lockSentinel.trim()) obj.Sentinel = lockSentinel.trim();
-    if (lockDuelist.trim()) obj.Duelist = lockDuelist.trim();
-    return obj;
-  }, [lockController, lockInitiator, lockSentinel, lockDuelist]);
+  const saveItems = useCallback(async (next: InventoryItem[]) => {
+    setItems(next);
+    await AsyncStorage.setItem(STORAGE_KEY, JSON.stringify(next));
+  }, []);
 
-  const [result, setResult] = useState<GeneratedComp | null>(null);
-  const [history, setHistory] = useState<GeneratedComp[]>([]);
+  // ── Scan handler ─────────────────────────────────────────────────────────────
 
-  function onRoll() {
-    try {
-      const comp = generateComp({
-        map: selectedMap,
-        mode,
-        style,
-        lockedRoles,
-        excludedAgents,
-      });
-      setResult(comp);
-      setHistory((h) => [comp, ...h].slice(0, 10));
-    } catch (e: any) {
-      Alert.alert("Couldn’t roll a comp", e?.message ?? "Unknown error");
-    }
-  }
+  const handleBarcodeScan = useCallback(
+    ({ data }: BarcodeScanningResult) => {
+      if (scanCooldown.current || !scanEnabled) return;
+      scanCooldown.current = true;
+      setScanEnabled(false);
 
-  const agentNames = useMemo(() => AGENTS.map((a) => a.name).sort(), []);
-  const diveDuelists = useMemo(
-    () => AGENTS.filter(isDiveDuelist).map((a) => a.name).sort(),
-    []
+      const existing = items.find((i) => i.barcode === data);
+      if (existing) {
+        setSelectedItem(existing);
+        setScreen("detail");
+      } else {
+        setScannedBarcode(data);
+        setScreen("add");
+      }
+
+      setTimeout(() => {
+        scanCooldown.current = false;
+      }, 2000);
+    },
+    [items, scanEnabled]
   );
 
+  // ── Resume scanning when returning to scanner screen ─────────────────────────
+
+  useEffect(() => {
+    if (screen === "scanner") {
+      setScannedBarcode(null);
+      setSelectedItem(null);
+      setScanEnabled(true);
+    }
+  }, [screen]);
+
+  // ── CRUD ────────────────────────────────────────────────────────────────────
+
+  const addItem = useCallback(
+    async (item: Omit<InventoryItem, "id" | "updatedAt">) => {
+      const next: InventoryItem = { ...item, id: generateId(), updatedAt: Date.now() };
+      await saveItems([next, ...items]);
+      setSelectedItem(next);
+      setScreen("detail");
+    },
+    [items, saveItems]
+  );
+
+  const updateItem = useCallback(
+    async (updated: InventoryItem) => {
+      const next = items.map((i) => (i.id === updated.id ? { ...updated, updatedAt: Date.now() } : i));
+      await saveItems(next);
+      setSelectedItem({ ...updated, updatedAt: Date.now() });
+    },
+    [items, saveItems]
+  );
+
+  const deleteItem = useCallback(
+    async (id: string) => {
+      const next = items.filter((i) => i.id !== id);
+      await saveItems(next);
+      setScreen("scanner");
+    },
+    [items, saveItems]
+  );
+
+  // ── Filtered inventory ───────────────────────────────────────────────────────
+
+  const filteredItems = items.filter(
+    (i) =>
+      i.name.toLowerCase().includes(searchQuery.toLowerCase()) ||
+      i.barcode.includes(searchQuery) ||
+      (i.location ?? "").toLowerCase().includes(searchQuery.toLowerCase())
+  );
+
+  // ── Render ──────────────────────────────────────────────────────────────────
+
   return (
-    <SafeAreaView style={styles.safe}>
-      <ScrollView contentContainerStyle={styles.container}>
-        <Text style={styles.title}>Valorant Comp Roller</Text>
-        <Text style={styles.subtitle}>
-          Structured randomness + fun presets. Every roll includes a dive duelist. (✅ Corrode added)
-        </Text>
+    <SafeAreaView style={styles.root}>
+      <StatusBar style="light" />
 
-        <View style={styles.card}>
-          <Text style={styles.sectionTitle}>Mode</Text>
-          <View style={styles.rowBetween}>
-            <Text style={styles.label}>Pro-Style Toggle</Text>
-            <Switch
-              value={mode === "PRO"}
-              onValueChange={(v) => setMode(v ? "PRO" : "RANKED")}
-            />
-          </View>
-          <Text style={styles.helper}>
-            {mode === "RANKED"
-              ? "Ranked: more standard + slightly safer flex choices."
-              : "Pro-style: leans utility and sometimes goes spicier (double duelist odds)."}
-          </Text>
-        </View>
+      {/* Header */}
+      <View style={styles.header}>
+        {screen !== "scanner" && screen !== "inventory" ? (
+          <Pressable onPress={() => setScreen(screen === "detail" ? "inventory" : "scanner")} hitSlop={10}>
+            <Text style={styles.headerBack}>← Back</Text>
+          </Pressable>
+        ) : (
+          <View style={{ width: 60 }} />
+        )}
+        <Text style={styles.headerTitle}>📦 Inventory</Text>
+        <View style={{ width: 60 }} />
+      </View>
 
-        <View style={styles.card}>
-          <Text style={styles.sectionTitle}>Comp Style</Text>
-          <Text style={styles.helper}>Pick a preset for fun variations.</Text>
-          <View style={styles.pillsWrap}>
-            <Pill
-              label="Standard"
-              active={style === "STANDARD"}
-              onPress={() => setStyle("STANDARD")}
-            />
-            <Pill
-              label="Double Duelist"
-              active={style === "DOUBLE_DUELIST"}
-              onPress={() => setStyle("DOUBLE_DUELIST")}
-            />
-            <Pill
-              label="Triple Initiator"
-              active={style === "TRIPLE_INITIATOR"}
-              onPress={() => setStyle("TRIPLE_INITIATOR")}
-            />
-            <Pill
-              label="Double Controller"
-              active={style === "DOUBLE_CONTROLLER"}
-              onPress={() => setStyle("DOUBLE_CONTROLLER")}
-            />
-            <Pill
-              label="Double Sentinel"
-              active={style === "DOUBLE_SENTINEL"}
-              onPress={() => setStyle("DOUBLE_SENTINEL")}
-            />
-            <Pill
-              label="Chaos"
-              active={style === "CHAOS"}
-              onPress={() => setStyle("CHAOS")}
-            />
-          </View>
-        </View>
-
-        <View style={styles.card}>
-          <Text style={styles.sectionTitle}>Map</Text>
-          <View style={styles.pillsWrap}>
-            <Pill
-              label="Random"
-              active={selectedMap === "Random"}
-              onPress={() => setSelectedMap("Random")}
-            />
-            {MAPS.map((m) => (
-              <Pill
-                key={m.name}
-                label={m.name}
-                active={selectedMap === m.name}
-                onPress={() => setSelectedMap(m.name)}
-              />
-            ))}
-          </View>
-        </View>
-
-        <View style={styles.card}>
-          <Text style={styles.sectionTitle}>Role Locks (optional)</Text>
-          <Text style={styles.helper}>
-            Type an agent name exactly. Duelist lock must be a dive duelist.
-            Locks apply once per role even if the style repeats roles.
-          </Text>
-
-          <View style={styles.lockRow}>
-            <Text style={styles.lockLabel}>Controller</Text>
-            <TextInput
-              value={lockController}
-              onChangeText={setLockController}
-              placeholder="e.g., Omen"
-              placeholderTextColor="#777"
-              style={styles.input}
-            />
-          </View>
-          <View style={styles.lockRow}>
-            <Text style={styles.lockLabel}>Initiator</Text>
-            <TextInput
-              value={lockInitiator}
-              onChangeText={setLockInitiator}
-              placeholder="e.g., Sova"
-              placeholderTextColor="#777"
-              style={styles.input}
-            />
-          </View>
-          <View style={styles.lockRow}>
-            <Text style={styles.lockLabel}>Sentinel</Text>
-            <TextInput
-              value={lockSentinel}
-              onChangeText={setLockSentinel}
-              placeholder="e.g., Killjoy"
-              placeholderTextColor="#777"
-              style={styles.input}
-            />
-          </View>
-          <View style={styles.lockRow}>
-            <Text style={styles.lockLabel}>Duelist</Text>
-            <TextInput
-              value={lockDuelist}
-              onChangeText={setLockDuelist}
-              placeholder={`Dive only: ${diveDuelists.join(", ")}`}
-              placeholderTextColor="#777"
-              style={styles.input}
-            />
-          </View>
-
-          <Text style={styles.smallListTitle}>Agent names:</Text>
-          <Text style={styles.smallList}>{agentNames.join(", ")}</Text>
-
-          <Text style={styles.smallListTitle}>Dive duelists:</Text>
-          <Text style={styles.smallList}>{diveDuelists.join(", ")}</Text>
-        </View>
-
-        <View style={styles.card}>
-          <Text style={styles.sectionTitle}>Exclude Agents (optional)</Text>
-          <Text style={styles.helper}>
-            Comma-separated list. Example: Reyna, Iso, Harbor
-          </Text>
-          <TextInput
-            value={excludedText}
-            onChangeText={setExcludedText}
-            placeholder="e.g., Reyna, Iso"
-            placeholderTextColor="#777"
-            style={styles.input}
-          />
-        </View>
-
-        <Pressable onPress={onRoll} style={styles.rollBtn}>
-          <Text style={styles.rollBtnText}>ROLL COMP</Text>
-        </Pressable>
-
-        {result && (
-          <View style={styles.card}>
-            <Text style={styles.sectionTitle}>Result</Text>
-            <Text style={styles.resultHeader}>
-              Map: <Text style={styles.resultStrong}>{result.map}</Text> • Mode:{" "}
-              <Text style={styles.resultStrong}>
-                {result.mode === "RANKED" ? "Ranked" : "Pro-Style"}
-              </Text>{" "}
-              • Style: <Text style={styles.resultStrong}>{styleLabel(result.style)}</Text>
+      {/* Tab bar (scanner + inventory) */}
+      {(screen === "scanner" || screen === "inventory") && (
+        <View style={styles.tabs}>
+          <Pressable
+            style={[styles.tab, screen === "scanner" && styles.tabActive]}
+            onPress={() => setScreen("scanner")}
+          >
+            <Text style={[styles.tabText, screen === "scanner" && styles.tabTextActive]}>📷 Scan</Text>
+          </Pressable>
+          <Pressable
+            style={[styles.tab, screen === "inventory" && styles.tabActive]}
+            onPress={() => setScreen("inventory")}
+          >
+            <Text style={[styles.tabText, screen === "inventory" && styles.tabTextActive]}>
+              📋 Inventory ({items.length})
             </Text>
+          </Pressable>
+        </View>
+      )}
 
-            {result.picks.map((p, idx) => (
-              <View key={`${p.slot}-${p.agent}-${idx}`} style={styles.resultRow}>
-                <Text style={styles.resultRole}>{p.slot}</Text>
-                <Text style={styles.resultAgent}>{p.agent}</Text>
-              </View>
-            ))}
-
-            <Text style={styles.sectionTitle}>Why it works</Text>
-            {result.notes.map((n, i) => (
-              <Text key={i} style={styles.note}>
-                • {n}
-              </Text>
-            ))}
-
-            <Text style={styles.sectionTitle}>Quick Strats</Text>
-            {result.strats.map((s, i) => (
-              <Text key={i} style={styles.note}>
-                • {s}
-              </Text>
-            ))}
-          </View>
-        )}
-
-        {history.length > 0 && (
-          <View style={styles.card}>
-            <Text style={styles.sectionTitle}>Recent Rolls</Text>
-            {history.map((h, i) => (
-              <View key={i} style={styles.historyItem}>
-                <Text style={styles.historyTitle}>
-                  {h.map} • {h.mode === "RANKED" ? "Ranked" : "Pro"} • {styleLabel(h.style)}
-                </Text>
-                <Text style={styles.historyLine}>
-                  {h.picks.map((p) => `${p.slot}:${p.agent}`).join(" | ")}
-                </Text>
-              </View>
-            ))}
-          </View>
-        )}
-
-        <View style={{ height: 24 }} />
-      </ScrollView>
+      {/* Screens */}
+      {screen === "scanner" && (
+        <ScannerScreen
+          permission={permission}
+          requestPermission={requestPermission}
+          onScan={handleBarcodeScan}
+          scanEnabled={scanEnabled}
+        />
+      )}
+      {screen === "inventory" && (
+        <InventoryScreen
+          items={filteredItems}
+          searchQuery={searchQuery}
+          onSearchChange={setSearchQuery}
+          onSelectItem={(item) => {
+            setSelectedItem(item);
+            setScreen("detail");
+          }}
+        />
+      )}
+      {screen === "add" && (
+        <AddItemScreen
+          barcode={scannedBarcode ?? ""}
+          onSave={addItem}
+          onCancel={() => setScreen("scanner")}
+        />
+      )}
+      {screen === "detail" && selectedItem && (
+        <DetailScreen
+          item={selectedItem}
+          onUpdate={updateItem}
+          onDelete={(id) => {
+            Alert.alert("Delete Item", "Remove this item from inventory?", [
+              { text: "Cancel", style: "cancel" },
+              { text: "Delete", style: "destructive", onPress: () => deleteItem(id) },
+            ]);
+          }}
+          onAddScan={() => setScreen("scanner")}
+        />
+      )}
     </SafeAreaView>
   );
 }
 
-const styles = StyleSheet.create({
-  safe: { flex: 1, backgroundColor: "#0b0f14" },
-  container: { padding: 16, gap: 12 },
-  title: { color: "white", fontSize: 22, fontWeight: "800" },
-  subtitle: { color: "#b8c0cc", marginTop: 4, lineHeight: 18 },
+// ─── Scanner Screen ───────────────────────────────────────────────────────────
 
-  card: {
-    backgroundColor: "#121a24",
-    borderRadius: 14,
+function ScannerScreen({
+  permission,
+  requestPermission,
+  onScan,
+  scanEnabled,
+}: {
+  permission: ReturnType<typeof useCameraPermissions>[0];
+  requestPermission: () => Promise<any>;
+  onScan: (r: BarcodeScanningResult) => void;
+  scanEnabled: boolean;
+}) {
+  if (!permission) {
+    return (
+      <View style={styles.centered}>
+        <Text style={styles.mutedText}>Checking camera permissions…</Text>
+      </View>
+    );
+  }
+
+  if (!permission.granted) {
+    return (
+      <View style={styles.centered}>
+        <Text style={styles.emptyIcon}>📷</Text>
+        <Text style={styles.emptyTitle}>Camera Access Required</Text>
+        <Text style={styles.mutedText}>Grant camera permission to scan barcodes.</Text>
+        <Pressable style={styles.primaryBtn} onPress={requestPermission}>
+          <Text style={styles.primaryBtnText}>Allow Camera</Text>
+        </Pressable>
+      </View>
+    );
+  }
+
+  return (
+    <View style={styles.cameraContainer}>
+      <CameraView
+        style={StyleSheet.absoluteFillObject}
+        facing="back"
+        barcodeScannerSettings={{
+          barcodeTypes: [
+            "ean13", "ean8", "upc_a", "upc_e",
+            "code128", "code39", "code93",
+            "itf14", "qr", "datamatrix", "pdf417",
+          ],
+        }}
+        onBarcodeScanned={scanEnabled ? onScan : undefined}
+      />
+      {/* Viewfinder overlay */}
+      <View style={styles.overlay}>
+        <View style={styles.viewfinder}>
+          <View style={[styles.corner, styles.cornerTL]} />
+          <View style={[styles.corner, styles.cornerTR]} />
+          <View style={[styles.corner, styles.cornerBL]} />
+          <View style={[styles.corner, styles.cornerBR]} />
+        </View>
+        <Text style={styles.scanHint}>
+          {scanEnabled ? "Point at a barcode to scan" : "Barcode detected…"}
+        </Text>
+      </View>
+    </View>
+  );
+}
+
+// ─── Inventory Screen ─────────────────────────────────────────────────────────
+
+function InventoryScreen({
+  items,
+  searchQuery,
+  onSearchChange,
+  onSelectItem,
+}: {
+  items: InventoryItem[];
+  searchQuery: string;
+  onSearchChange: (q: string) => void;
+  onSelectItem: (item: InventoryItem) => void;
+}) {
+  return (
+    <View style={styles.flex}>
+      <View style={styles.searchRow}>
+        <TextInput
+          style={styles.searchInput}
+          placeholder="Search name, barcode, location…"
+          placeholderTextColor="#888"
+          value={searchQuery}
+          onChangeText={onSearchChange}
+          clearButtonMode="while-editing"
+        />
+      </View>
+
+      {items.length === 0 ? (
+        <View style={styles.centered}>
+          <Text style={styles.emptyIcon}>🗂️</Text>
+          <Text style={styles.emptyTitle}>No items yet</Text>
+          <Text style={styles.mutedText}>Scan a barcode to add your first item.</Text>
+        </View>
+      ) : (
+        <FlatList
+          data={items}
+          keyExtractor={(i) => i.id}
+          contentContainerStyle={{ padding: 12 }}
+          ItemSeparatorComponent={() => <View style={{ height: 8 }} />}
+          renderItem={({ item }) => (
+            <Pressable style={styles.itemCard} onPress={() => onSelectItem(item)}>
+              <View style={styles.itemCardLeft}>
+                <Text style={styles.itemCardName}>{item.name}</Text>
+                <Text style={styles.itemCardBarcode}>{item.barcode}</Text>
+                {item.location ? <Text style={styles.itemCardLocation}>📍 {item.location}</Text> : null}
+              </View>
+              <View style={styles.itemCardRight}>
+                <Text style={styles.itemCardQty}>{item.quantity}</Text>
+                <Text style={styles.itemCardQtyLabel}>qty</Text>
+              </View>
+            </Pressable>
+          )}
+        />
+      )}
+    </View>
+  );
+}
+
+// ─── Add Item Screen ──────────────────────────────────────────────────────────
+
+function AddItemScreen({
+  barcode,
+  onSave,
+  onCancel,
+}: {
+  barcode: string;
+  onSave: (item: Omit<InventoryItem, "id" | "updatedAt">) => void;
+  onCancel: () => void;
+}) {
+  const [name, setName] = useState("");
+  const [quantity, setQuantity] = useState("1");
+  const [location, setLocation] = useState("");
+  const [notes, setNotes] = useState("");
+
+  const handleSave = () => {
+    if (!name.trim()) {
+      Alert.alert("Name required", "Please enter a name for this item.");
+      return;
+    }
+    const qty = parseInt(quantity, 10);
+    if (isNaN(qty) || qty < 0) {
+      Alert.alert("Invalid quantity", "Enter a valid number.");
+      return;
+    }
+    onSave({ barcode, name: name.trim(), quantity: qty, location: location.trim(), notes: notes.trim() });
+  };
+
+  return (
+    <ScrollView style={styles.flex} contentContainerStyle={styles.formContainer} keyboardShouldPersistTaps="handled">
+      <View style={styles.barcodeTag}>
+        <Text style={styles.barcodeTagLabel}>Scanned barcode</Text>
+        <Text style={styles.barcodeTagValue}>{barcode}</Text>
+      </View>
+
+      <FormField label="Item Name *" value={name} onChangeText={setName} placeholder="e.g. Blue Widget" />
+      <FormField
+        label="Quantity"
+        value={quantity}
+        onChangeText={setQuantity}
+        placeholder="1"
+        keyboardType="number-pad"
+      />
+      <FormField label="Location" value={location} onChangeText={setLocation} placeholder="e.g. Shelf A3" />
+      <FormField label="Notes" value={notes} onChangeText={setNotes} placeholder="Optional notes" multiline />
+
+      <Pressable style={styles.primaryBtn} onPress={handleSave}>
+        <Text style={styles.primaryBtnText}>Add to Inventory</Text>
+      </Pressable>
+      <Pressable style={styles.ghostBtn} onPress={onCancel}>
+        <Text style={styles.ghostBtnText}>Cancel</Text>
+      </Pressable>
+    </ScrollView>
+  );
+}
+
+// ─── Detail Screen ────────────────────────────────────────────────────────────
+
+function DetailScreen({
+  item,
+  onUpdate,
+  onDelete,
+  onAddScan,
+}: {
+  item: InventoryItem;
+  onUpdate: (item: InventoryItem) => void;
+  onDelete: (id: string) => void;
+  onAddScan: () => void;
+}) {
+  const [editing, setEditing] = useState(false);
+  const [name, setName] = useState(item.name);
+  const [quantity, setQuantity] = useState(String(item.quantity));
+  const [location, setLocation] = useState(item.location ?? "");
+  const [notes, setNotes] = useState(item.notes ?? "");
+
+  // Sync if item prop changes (e.g. after inline qty bump)
+  useEffect(() => {
+    setName(item.name);
+    setQuantity(String(item.quantity));
+    setLocation(item.location ?? "");
+    setNotes(item.notes ?? "");
+  }, [item]);
+
+  const handleSave = () => {
+    if (!name.trim()) {
+      Alert.alert("Name required");
+      return;
+    }
+    const qty = parseInt(quantity, 10);
+    if (isNaN(qty) || qty < 0) {
+      Alert.alert("Invalid quantity");
+      return;
+    }
+    onUpdate({ ...item, name: name.trim(), quantity: qty, location: location.trim(), notes: notes.trim() });
+    setEditing(false);
+  };
+
+  const adjustQty = (delta: number) => {
+    const next = Math.max(0, item.quantity + delta);
+    onUpdate({ ...item, quantity: next });
+  };
+
+  return (
+    <ScrollView style={styles.flex} contentContainerStyle={styles.formContainer} keyboardShouldPersistTaps="handled">
+      {!editing ? (
+        <>
+          <View style={styles.detailHeader}>
+            <Text style={styles.detailName}>{item.name}</Text>
+            <Text style={styles.detailBarcode}>{item.barcode}</Text>
+            {item.location ? <Text style={styles.detailLocation}>📍 {item.location}</Text> : null}
+            <Text style={styles.detailDate}>Updated {formatDate(item.updatedAt)}</Text>
+          </View>
+
+          {/* Quick qty control */}
+          <View style={styles.qtyRow}>
+            <Pressable style={styles.qtyBtn} onPress={() => adjustQty(-1)}>
+              <Text style={styles.qtyBtnText}>−</Text>
+            </Pressable>
+            <View style={styles.qtyDisplay}>
+              <Text style={styles.qtyValue}>{item.quantity}</Text>
+              <Text style={styles.qtyLabel}>in stock</Text>
+            </View>
+            <Pressable style={styles.qtyBtn} onPress={() => adjustQty(1)}>
+              <Text style={styles.qtyBtnText}>+</Text>
+            </Pressable>
+          </View>
+
+          {item.notes ? (
+            <View style={styles.notesBox}>
+              <Text style={styles.notesLabel}>Notes</Text>
+              <Text style={styles.notesText}>{item.notes}</Text>
+            </View>
+          ) : null}
+
+          <Pressable style={styles.primaryBtn} onPress={() => setEditing(true)}>
+            <Text style={styles.primaryBtnText}>Edit Item</Text>
+          </Pressable>
+          <Pressable style={styles.ghostBtn} onPress={onAddScan}>
+            <Text style={styles.ghostBtnText}>Scan Another</Text>
+          </Pressable>
+          <Pressable style={styles.dangerBtn} onPress={() => onDelete(item.id)}>
+            <Text style={styles.dangerBtnText}>Delete Item</Text>
+          </Pressable>
+        </>
+      ) : (
+        <>
+          <View style={styles.barcodeTag}>
+            <Text style={styles.barcodeTagLabel}>Barcode</Text>
+            <Text style={styles.barcodeTagValue}>{item.barcode}</Text>
+          </View>
+
+          <FormField label="Item Name *" value={name} onChangeText={setName} placeholder="Item name" />
+          <FormField
+            label="Quantity"
+            value={quantity}
+            onChangeText={setQuantity}
+            placeholder="0"
+            keyboardType="number-pad"
+          />
+          <FormField label="Location" value={location} onChangeText={setLocation} placeholder="e.g. Shelf A3" />
+          <FormField label="Notes" value={notes} onChangeText={setNotes} placeholder="Optional" multiline />
+
+          <Pressable style={styles.primaryBtn} onPress={handleSave}>
+            <Text style={styles.primaryBtnText}>Save Changes</Text>
+          </Pressable>
+          <Pressable style={styles.ghostBtn} onPress={() => setEditing(false)}>
+            <Text style={styles.ghostBtnText}>Cancel</Text>
+          </Pressable>
+        </>
+      )}
+    </ScrollView>
+  );
+}
+
+// ─── Shared FormField ─────────────────────────────────────────────────────────
+
+function FormField({
+  label,
+  value,
+  onChangeText,
+  placeholder,
+  keyboardType,
+  multiline,
+}: {
+  label: string;
+  value: string;
+  onChangeText: (v: string) => void;
+  placeholder?: string;
+  keyboardType?: "default" | "number-pad";
+  multiline?: boolean;
+}) {
+  return (
+    <View style={styles.field}>
+      <Text style={styles.fieldLabel}>{label}</Text>
+      <TextInput
+        style={[styles.fieldInput, multiline && styles.fieldInputMulti]}
+        value={value}
+        onChangeText={onChangeText}
+        placeholder={placeholder}
+        placeholderTextColor="#999"
+        keyboardType={keyboardType ?? "default"}
+        multiline={multiline}
+        numberOfLines={multiline ? 3 : 1}
+      />
+    </View>
+  );
+}
+
+// ─── Styles ───────────────────────────────────────────────────────────────────
+
+const ACCENT = "#4F8EF7";
+const DANGER = "#E53935";
+const BG = "#0F1117";
+const CARD = "#1C1F2E";
+const BORDER = "#2A2D3E";
+const TEXT = "#EAEAEA";
+const MUTED = "#888";
+
+const styles = StyleSheet.create({
+  root: { flex: 1, backgroundColor: BG },
+  flex: { flex: 1 },
+
+  // Header
+  header: {
+    flexDirection: "row",
+    alignItems: "center",
+    justifyContent: "space-between",
+    paddingHorizontal: 16,
+    paddingVertical: 12,
+    backgroundColor: CARD,
+    borderBottomWidth: 1,
+    borderBottomColor: BORDER,
+  },
+  headerTitle: { color: TEXT, fontSize: 18, fontWeight: "700" },
+  headerBack: { color: ACCENT, fontSize: 16 },
+
+  // Tabs
+  tabs: {
+    flexDirection: "row",
+    backgroundColor: CARD,
+    borderBottomWidth: 1,
+    borderBottomColor: BORDER,
+  },
+  tab: {
+    flex: 1,
+    paddingVertical: 12,
+    alignItems: "center",
+  },
+  tabActive: {
+    borderBottomWidth: 2,
+    borderBottomColor: ACCENT,
+  },
+  tabText: { color: MUTED, fontSize: 14, fontWeight: "600" },
+  tabTextActive: { color: ACCENT },
+
+  // Camera
+  cameraContainer: { flex: 1, backgroundColor: "#000" },
+  overlay: {
+    ...StyleSheet.absoluteFillObject,
+    justifyContent: "center",
+    alignItems: "center",
+  },
+  viewfinder: {
+    width: 260,
+    height: 180,
+    position: "relative",
+  },
+  corner: {
+    position: "absolute",
+    width: 28,
+    height: 28,
+    borderColor: "#fff",
+    borderWidth: 3,
+  },
+  cornerTL: { top: 0, left: 0, borderRightWidth: 0, borderBottomWidth: 0 },
+  cornerTR: { top: 0, right: 0, borderLeftWidth: 0, borderBottomWidth: 0 },
+  cornerBL: { bottom: 0, left: 0, borderRightWidth: 0, borderTopWidth: 0 },
+  cornerBR: { bottom: 0, right: 0, borderLeftWidth: 0, borderTopWidth: 0 },
+  scanHint: {
+    color: "rgba(255,255,255,0.85)",
+    marginTop: 24,
+    fontSize: 14,
+    backgroundColor: "rgba(0,0,0,0.45)",
+    paddingHorizontal: 14,
+    paddingVertical: 6,
+    borderRadius: 20,
+    overflow: "hidden",
+  },
+
+  // Centered empty states
+  centered: { flex: 1, justifyContent: "center", alignItems: "center", padding: 24 },
+  emptyIcon: { fontSize: 56, marginBottom: 12 },
+  emptyTitle: { color: TEXT, fontSize: 20, fontWeight: "700", marginBottom: 6 },
+  mutedText: { color: MUTED, fontSize: 14, textAlign: "center", lineHeight: 20 },
+
+  // Search
+  searchRow: { padding: 12, backgroundColor: CARD, borderBottomWidth: 1, borderBottomColor: BORDER },
+  searchInput: {
+    backgroundColor: BG,
+    color: TEXT,
+    borderRadius: 10,
+    paddingHorizontal: 14,
+    paddingVertical: Platform.OS === "ios" ? 10 : 8,
+    fontSize: 14,
+    borderWidth: 1,
+    borderColor: BORDER,
+  },
+
+  // Item card
+  itemCard: {
+    backgroundColor: CARD,
+    borderRadius: 12,
+    padding: 14,
+    flexDirection: "row",
+    alignItems: "center",
+    borderWidth: 1,
+    borderColor: BORDER,
+  },
+  itemCardLeft: { flex: 1 },
+  itemCardName: { color: TEXT, fontSize: 16, fontWeight: "600" },
+  itemCardBarcode: { color: MUTED, fontSize: 12, marginTop: 2 },
+  itemCardLocation: { color: MUTED, fontSize: 12, marginTop: 2 },
+  itemCardRight: { alignItems: "center", marginLeft: 12 },
+  itemCardQty: { color: ACCENT, fontSize: 24, fontWeight: "800" },
+  itemCardQtyLabel: { color: MUTED, fontSize: 11 },
+
+  // Form
+  formContainer: { padding: 16, gap: 14 },
+  barcodeTag: {
+    backgroundColor: CARD,
+    borderRadius: 10,
     padding: 14,
     borderWidth: 1,
-    borderColor: "#1c2a3a",
-    gap: 10,
+    borderColor: BORDER,
   },
-  sectionTitle: { color: "white", fontSize: 16, fontWeight: "700" },
-  label: { color: "#d7deea", fontSize: 14 },
-  helper: { color: "#98a5b5", fontSize: 12, lineHeight: 16 },
+  barcodeTagLabel: { color: MUTED, fontSize: 11, marginBottom: 4, textTransform: "uppercase", letterSpacing: 0.8 },
+  barcodeTagValue: { color: ACCENT, fontSize: 16, fontFamily: Platform.OS === "ios" ? "Menlo" : "monospace" },
 
-  rowBetween: {
-    flexDirection: "row",
-    justifyContent: "space-between",
-    alignItems: "center",
-    gap: 10,
-  },
-
-  pillsWrap: { flexDirection: "row", flexWrap: "wrap", gap: 8 },
-  pill: { paddingVertical: 8, paddingHorizontal: 10, borderRadius: 999, borderWidth: 1 },
-  pillActive: { backgroundColor: "#2a3b52", borderColor: "#4a6a92" },
-  pillInactive: { backgroundColor: "#0f1620", borderColor: "#223245" },
-  pillText: { fontSize: 12, fontWeight: "700" },
-  pillTextActive: { color: "white" },
-  pillTextInactive: { color: "#b8c0cc" },
-
-  lockRow: { flexDirection: "row", alignItems: "center", gap: 10 },
-  lockLabel: { width: 80, color: "#d7deea", fontSize: 13, fontWeight: "700" },
-
-  input: {
-    flex: 1,
-    borderWidth: 1,
-    borderColor: "#243246",
-    backgroundColor: "#0f1620",
-    color: "white",
-    paddingHorizontal: 12,
-    paddingVertical: 10,
+  field: { gap: 6 },
+  fieldLabel: { color: MUTED, fontSize: 12, textTransform: "uppercase", letterSpacing: 0.6 },
+  fieldInput: {
+    backgroundColor: CARD,
+    color: TEXT,
     borderRadius: 10,
+    paddingHorizontal: 14,
+    paddingVertical: 12,
+    fontSize: 15,
+    borderWidth: 1,
+    borderColor: BORDER,
   },
+  fieldInputMulti: { height: 80, textAlignVertical: "top" },
 
-  smallListTitle: { color: "#d7deea", fontSize: 12, fontWeight: "700", marginTop: 6 },
-  smallList: { color: "#98a5b5", fontSize: 12, lineHeight: 16 },
-
-  rollBtn: {
-    backgroundColor: "#3b82f6",
-    paddingVertical: 14,
-    borderRadius: 14,
+  // Buttons
+  primaryBtn: {
+    backgroundColor: ACCENT,
+    borderRadius: 12,
+    paddingVertical: 15,
     alignItems: "center",
   },
-  rollBtnText: { color: "white", fontWeight: "900", letterSpacing: 1 },
-
-  resultHeader: { color: "#d7deea", lineHeight: 18 },
-  resultStrong: { color: "white", fontWeight: "800" },
-  resultRow: {
-    flexDirection: "row",
-    justifyContent: "space-between",
-    paddingVertical: 8,
-    borderBottomWidth: 1,
-    borderBottomColor: "#1c2a3a",
+  primaryBtnText: { color: "#fff", fontWeight: "700", fontSize: 16 },
+  ghostBtn: {
+    borderRadius: 12,
+    paddingVertical: 15,
+    alignItems: "center",
+    borderWidth: 1,
+    borderColor: BORDER,
   },
-  resultRole: { color: "#b8c0cc", fontWeight: "800" },
-  resultAgent: { color: "white", fontWeight: "900" },
+  ghostBtnText: { color: MUTED, fontWeight: "600", fontSize: 16 },
+  dangerBtn: {
+    borderRadius: 12,
+    paddingVertical: 15,
+    alignItems: "center",
+    borderWidth: 1,
+    borderColor: DANGER,
+  },
+  dangerBtnText: { color: DANGER, fontWeight: "600", fontSize: 16 },
 
-  note: { color: "#d7deea", lineHeight: 18 },
+  // Detail
+  detailHeader: { backgroundColor: CARD, borderRadius: 12, padding: 16, borderWidth: 1, borderColor: BORDER, gap: 4 },
+  detailName: { color: TEXT, fontSize: 22, fontWeight: "700" },
+  detailBarcode: { color: MUTED, fontSize: 13, fontFamily: Platform.OS === "ios" ? "Menlo" : "monospace" },
+  detailLocation: { color: MUTED, fontSize: 14 },
+  detailDate: { color: MUTED, fontSize: 12, marginTop: 4 },
 
-  historyItem: { paddingVertical: 10, borderTopWidth: 1, borderTopColor: "#1c2a3a" },
-  historyTitle: { color: "white", fontWeight: "800" },
-  historyLine: { color: "#98a5b5", marginTop: 4, lineHeight: 16 },
+  // Qty control
+  qtyRow: {
+    flexDirection: "row",
+    alignItems: "center",
+    backgroundColor: CARD,
+    borderRadius: 12,
+    borderWidth: 1,
+    borderColor: BORDER,
+    overflow: "hidden",
+  },
+  qtyBtn: {
+    padding: 20,
+    alignItems: "center",
+    justifyContent: "center",
+    backgroundColor: BORDER,
+    width: 64,
+  },
+  qtyBtnText: { color: TEXT, fontSize: 28, fontWeight: "300" },
+  qtyDisplay: { flex: 1, alignItems: "center" },
+  qtyValue: { color: TEXT, fontSize: 36, fontWeight: "800" },
+  qtyLabel: { color: MUTED, fontSize: 12 },
+
+  // Notes
+  notesBox: { backgroundColor: CARD, borderRadius: 12, padding: 14, borderWidth: 1, borderColor: BORDER, gap: 4 },
+  notesLabel: { color: MUTED, fontSize: 11, textTransform: "uppercase", letterSpacing: 0.6 },
+  notesText: { color: TEXT, fontSize: 14, lineHeight: 20 },
 });

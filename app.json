@@ -1,35 +1,47 @@
 {
   "expo": {
-    "name": "valorant-comp-roller",
-    "slug": "valorant-comp-roller",
+    "name": "Barcode Inventory",
+    "slug": "barcode-inventory",
     "version": "1.0.0",
     "orientation": "portrait",
     "icon": "./assets/icon.png",
-    "userInterfaceStyle": "light",
+    "userInterfaceStyle": "dark",
     "newArchEnabled": true,
     "splash": {
       "image": "./assets/splash-icon.png",
       "resizeMode": "contain",
-      "backgroundColor": "#ffffff"
+      "backgroundColor": "#0F1117"
     },
     "ios": {
       "supportsTablet": true,
-      "bundleIdentifier": "com.oomaximusoo.valorantcomproller",
+      "bundleIdentifier": "com.oomaximus.barcodeinventory",
       "infoPlist": {
-        "ITSAppUsesNonExemptEncryption": false
+        "ITSAppUsesNonExemptEncryption": false,
+        "NSCameraUsageDescription": "Camera is used to scan barcodes for inventory management."
       }
     },
     "android": {
       "adaptiveIcon": {
         "foregroundImage": "./assets/adaptive-icon.png",
-        "backgroundColor": "#ffffff"
+        "backgroundColor": "#0F1117"
       },
       "edgeToEdgeEnabled": true,
-      "predictiveBackGestureEnabled": false
+      "predictiveBackGestureEnabled": false,
+      "permissions": [
+        "android.permission.CAMERA"
+      ]
     },
     "web": {
       "favicon": "./assets/favicon.png"
     },
+    "plugins": [
+      [
+        "expo-camera",
+        {
+          "cameraPermission": "Camera is used to scan barcodes for inventory management."
+        }
+      ]
+    ],
     "extra": {
       "eas": {
         "projectId": "880d71c1-c84d-475e-ad4a-8f738c70f205"
