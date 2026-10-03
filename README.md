@@ -6,7 +6,7 @@ Instead of defaulting to the same meta agents every game, this app helps players
 
 🔗 Live Demo: (https://oomaximus-valorant-comp-roller-2e4b.vercel.app/)
 
-🚀 Overview
+Overview:
 
 Valorant Comp Roller is a front-end web application that dynamically generates random team compositions for ranked or competitive play.
 
@@ -20,7 +20,7 @@ Implement clean component structure
 
 Deploy a production-ready application using Vercel
 
-🛠 Tech Stack
+Tech Stack:
 
 Frontend
 
@@ -36,11 +36,7 @@ Vercel (production hosting & CI/CD integration)
 
 Version Control
 
-Git
-
-GitHub
-
-⚙️ Features
+Features:
 
 🎲 Randomized 5-agent team generation
 
@@ -64,7 +60,7 @@ Allows users to re-roll compositions instantly.
 
 The focus was clean logic flow and separation of concerns between UI rendering and generation logic.
 
-🧪 Running Locally
+Running Locally:
 
 Clone the repository:
 
@@ -81,7 +77,8 @@ npm install
 Run locally:
 
 npm run dev
-🌍 Deployment
+
+Deployment: 
 
 This project is deployed using Vercel.
 
@@ -97,7 +94,7 @@ This reinforces real-world CI/CD practices and production readiness.
 
 🎯 Why I Built This
 
-As an aspiring full-stack engineer, I focus on building projects that:
+As an aspiring engineer, I focus on building projects that:
 
 Demonstrate applied logic
 
@@ -122,5 +119,5 @@ Backend integration for tracking comp usage
 👤 Author
 
 Maximus Walker
-Software Engineer Apprentice | Full-Stack Focused
+Full-Stack Focused
 GitHub: https://github.com/oomaximus
