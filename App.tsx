@@ -13,13 +13,13 @@ import {
 
 /**
  * Valorant Comp Roller (Fun MVP+)
- * - Map selector + Random (✅ includes Corrode)
+ * - Map selector + Random ( includes Corrode)
  * - Mode: Ranked vs Pro (affects weighting + flex tendencies)
  * - Role locks (simple: 1 lock per base role)
  * - Exclude agents
- * - ✅ Dive Duelist REQUIRED on every map
- * - ✅ Comp Style presets: Standard / Double Duelist / Triple Initiator / Double Controller / Double Sentinel / Chaos
- * - ✅ Quick Strats generated from map + comp
+ * -  Dive Duelist REQUIRED on every map
+ * -  Comp Style presets: Standard / Double Duelist / Triple Initiator / Double Controller / Double Sentinel / Chaos
+ * -  Quick Strats generated from map + comp
  */
 
 type Role = "Duelist" | "Controller" | "Initiator" | "Sentinel";
@@ -111,7 +111,7 @@ const AGENTS: Agent[] = [
   { name: "Veto", roles: ["Sentinel"], tags: ["trap"] },
   { name: "Vyse", roles: ["Sentinel"], tags: ["stall"] },
 
-  // Duelists (✅ mark dive duelists)
+  // Duelists ( mark dive duelists)
   { name: "Jett", roles: ["Duelist"], tags: ["entry", "dive"] },
   { name: "Raze", roles: ["Duelist"], tags: ["entry", "dive"] },
   { name: "Neon", roles: ["Duelist"], tags: ["entry", "dive"] },
@@ -137,7 +137,7 @@ const MAPS: MapProfile[] = [
   { name: "Fracture", needs: { preferFlash: true, preferTrapSentinel: true } },
   { name: "Pearl", needs: { preferRecon: true, preferDoubleController: true } },
 
-  // ✅ NEW MAP
+  //  NEW MAP
   // (Lightweight guess: tends to like info + flash + solid anchoring)
   { name: "Corrode", needs: { preferRecon: true, preferFlash: true, preferTrapSentinel: true } },
 ];
@@ -219,7 +219,7 @@ function styleLabel(style: CompStyle) {
 
 function getStyleSlots(style: CompStyle): Array<{ role: Role; slot: string; requirements?: "DIVE_DUELIST" }> {
   // Always 5 players
-  // ✅ Dive duelist ALWAYS required (either a dedicated slot, or enforced within the first duelist slot)
+  //  Dive duelist ALWAYS required (either a dedicated slot, or enforced within the first duelist slot)
   switch (style) {
     case "STANDARD":
       // Controller + Initiator + Sentinel + Dive Duelist + Flex-ish (weighted)
@@ -408,7 +408,7 @@ function generateComp(args: {
     }
   }
 
-  // ✅ If duelist is locked, it MUST be a dive duelist (because we guarantee one)
+  //  If duelist is locked, it MUST be a dive duelist (because we guarantee one)
   if (args.lockedRoles.Duelist) {
     const locked = args.lockedRoles.Duelist;
     const a = AGENTS.find((x) => x.name === locked);
@@ -509,7 +509,7 @@ function generateComp(args: {
     return picks.map((p) => AGENTS.find((a) => a.name === p.agent)!).filter(Boolean);
   }
 
-   // Fill slots in order (✅ switch avoids TS "no overlap" comparison warnings)
+   // Fill slots in order ( switch avoids TS "no overlap" comparison warnings)
   for (const s of slots) {
     switch (s.role) {
       case "Controller": {
@@ -533,7 +533,7 @@ function generateComp(args: {
           if (needs.preferFlash && !hasFlash) flexPref = "Initiator";
           if (needs.preferRecon && !hasRecon) flexPref = "Initiator";
 
-          // ✅ (optional) allow second sentinel sometimes so flexPref can truly be "Sentinel"
+          //  (optional) allow second sentinel sometimes so flexPref can truly be "Sentinel"
           if (needs.preferTrapSentinel && Math.random() < 0.12) flexPref = "Sentinel";
 
           // Mode influence
@@ -732,7 +732,7 @@ export default function App() {
       <ScrollView contentContainerStyle={styles.container}>
         <Text style={styles.title}>Valorant Comp Roller</Text>
         <Text style={styles.subtitle}>
-          Structured randomness + fun presets. Every roll includes a dive duelist. (✅ Corrode added)
+          Structured randomness + fun presets. Every roll includes a dive duelist. ( Corrode added)
         </Text>
 
         <View style={styles.card}>
